@@ -1,15 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import CameraCapture from './components/CameraCapture';
+import EventEditModal from './components/EventEditModal';
 import { parseWithAI, type ParsedEvent, type ParseResult } from './lib/parseWithAI';
 import { toIcs } from './lib/ics';
 import { initializeGoogleAuth, signIn, signOut, createCalendarEvent, getAccessToken, type GoogleUser } from './lib/googleAuth';
-import Tesseract from 'tesseract.js';
 
 export default function App() {
   const [user, setUser] = useState<GoogleUser | null>(null);
-  const [extractedText, setExtractedText] = useState('');
+  const [inputText, setInputText] = useState('');
+  const [inputMethod, setInputMethod] = useState<'text' | 'camera' | 'upload'>('text');
   const [parsing, setParsing] = useState(false);
-  const [ocrLoading, setOcrLoading] = useState(false);
   const [creating, setCreating] = useState(false);
   const [events, setEvents] = useState<ParsedEvent[] | null>(null);
   const [ics, setIcs] = useState<string | null>(null);
@@ -17,6 +17,9 @@ export default function App() {
   const [authError, setAuthError] = useState<string | null>(null);
   const [signingIn, setSigningIn] = useState(false);
   const [parseResult, setParseResult] = useState<ParseResult | null>(null);
+  const [selectedImage, setSelectedImage] = useState<Blob | null>(null);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [editingEventIndex, setEditingEventIndex] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Effect to initialize Google Auth
@@ -85,51 +88,63 @@ export default function App() {
     return () => clearTimeout(timeoutId);
   }, []);
 
-  const handleImage = async (blob: Blob) => {
-    setOcrLoading(true);
-    try {
-      // Convert blob to data URL for OCR
-      const dataUrl = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result));
-        reader.onerror = () => reject(reader.error);
-        reader.readAsDataURL(blob);
-      });
-
-      // Run OCR client-side
-      const { data: { text } } = await Tesseract.recognize(dataUrl, 'eng');
-      setExtractedText(text || '');
-      
-      // Automatically parse if text was extracted
-      if (text) {
-        await parseText(text);
+  // Cleanup image preview URL on unmount
+  useEffect(() => {
+    return () => {
+      if (imagePreview) {
+        URL.revokeObjectURL(imagePreview);
       }
-    } catch (error: any) {
-      alert('OCR failed: ' + (error?.message || 'Unknown error'));
-    } finally {
-      setOcrLoading(false);
-    }
+    };
+  }, [imagePreview]);
+
+  const handleImageCapture = async (blob: Blob) => {
+    setSelectedImage(blob);
+    setInputMethod('camera');
+    // Create preview
+    const url = URL.createObjectURL(blob);
+    setImagePreview(url);
   };
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    await handleImage(file);
+    setSelectedImage(file);
+    setInputMethod('upload');
+    // Create preview
+    const url = URL.createObjectURL(file);
+    setImagePreview(url);
   };
 
-  const parseText = async (text?: string) => {
-    const textToParse = text || extractedText;
-    if (!textToParse) return;
+  const handleParse = async () => {
+    if (inputMethod === 'text' && !inputText.trim()) {
+      alert('Please enter some text to parse');
+      return;
+    }
+    if ((inputMethod === 'camera' || inputMethod === 'upload') && !selectedImage) {
+      alert('Please capture or upload an image');
+      return;
+    }
 
     setParsing(true);
     setParseResult(null);
+    setEvents(null);
+    setIcs(null);
+    setEditingEventIndex(null);
+    
     try {
-      const result = await parseWithAI(textToParse);
+      // Send text or image directly to AI
+      const input = inputMethod === 'text' ? inputText : selectedImage!;
+      const result = await parseWithAI(input);
       setParseResult(result);
       setEvents(result.events);
       
       // Log the parsing method used
       console.log(`Parsing method: ${result.method}`, result.method === 'gemini' ? `(Model: ${result.model})` : `(Reason: ${result.reason})`);
+      
+      // Automatically open first event for editing
+      if (result.events.length > 0) {
+        setEditingEventIndex(0);
+      }
       
       // Generate ICS
       try {
@@ -144,6 +159,42 @@ export default function App() {
     } finally {
       setParsing(false);
     }
+  };
+
+  const handleEventSave = (updatedEvent: ParsedEvent) => {
+    if (editingEventIndex === null || !events) return;
+    
+    const updatedEvents = [...events];
+    updatedEvents[editingEventIndex] = updatedEvent;
+    setEvents(updatedEvents);
+    
+    // Regenerate ICS with updated events
+    try {
+      const icsContent = toIcs(updatedEvents);
+      setIcs(icsContent);
+    } catch (err) {
+      console.error('ICS generation failed:', err);
+      setIcs(null);
+    }
+    
+    // Move to next event or close if last
+    if (editingEventIndex < events.length - 1) {
+      setEditingEventIndex(editingEventIndex + 1);
+    } else {
+      setEditingEventIndex(null);
+    }
+  };
+
+  const clearInput = () => {
+    setInputText('');
+    setSelectedImage(null);
+    if (imagePreview) {
+      URL.revokeObjectURL(imagePreview);
+    }
+    setImagePreview(null);
+    setEvents(null);
+    setParseResult(null);
+    setIcs(null);
   };
 
   const createEvents = async () => {
@@ -234,39 +285,169 @@ export default function App() {
 
       <main>
         <section style={{ marginBottom: 32 }}>
-          <h2>1) Capture a photo (or upload)</h2>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 16 }}>
-            <CameraCapture onCapture={handleImage} />
-            <div>
-              <input ref={fileInputRef} type="file" accept="image/*" onChange={handleFileSelect} />
-            </div>
-          </div>
-          {ocrLoading && <div style={{ marginTop: 8, color: '#666' }}>Extracting text from image...</div>}
-        </section>
-
-        <section style={{ marginBottom: 32 }}>
-          <h2>2) Extracted text</h2>
-          <textarea
-            value={extractedText}
-            onChange={(e) => {
-              setExtractedText(e.target.value);
-              // Clear parse result when text changes
-              if (parseResult) setParseResult(null);
-            }}
-            placeholder="Extracted text from photo will appear here..."
-            rows={8}
-            style={{ width: '100%', fontFamily: 'monospace', padding: '8px' }}
-          />
-          <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 12 }}>
-            <button onClick={() => parseText()} disabled={!extractedText || parsing}>
-              {parsing ? 'Parsing…' : 'Parse with AI'}
+          <h2>1) Input Method</h2>
+          
+          {/* Input Method Tabs */}
+          <div style={{ display: 'flex', gap: 8, marginBottom: 16, borderBottom: '2px solid #ddd' }}>
+            <button
+              onClick={() => {
+                setInputMethod('text');
+                clearInput();
+              }}
+              style={{
+                padding: '8px 16px',
+                border: 'none',
+                background: inputMethod === 'text' ? '#4285f4' : 'transparent',
+                color: inputMethod === 'text' ? 'white' : '#666',
+                cursor: 'pointer',
+                borderBottom: inputMethod === 'text' ? '2px solid #4285f4' : '2px solid transparent',
+                marginBottom: '-2px',
+              }}
+            >
+              📝 Paste Text
             </button>
-            {!parsing && extractedText && (
+            <button
+              onClick={() => {
+                setInputMethod('camera');
+                clearInput();
+              }}
+              style={{
+                padding: '8px 16px',
+                border: 'none',
+                background: inputMethod === 'camera' ? '#4285f4' : 'transparent',
+                color: inputMethod === 'camera' ? 'white' : '#666',
+                cursor: 'pointer',
+                borderBottom: inputMethod === 'camera' ? '2px solid #4285f4' : '2px solid transparent',
+                marginBottom: '-2px',
+              }}
+            >
+              📷 Camera
+            </button>
+            <button
+              onClick={() => {
+                setInputMethod('upload');
+                if (inputMethod !== 'upload') {
+                  clearInput();
+                }
+                // Trigger file input click after a small delay to ensure state is updated
+                setTimeout(() => {
+                  fileInputRef.current?.click();
+                }, 0);
+              }}
+              style={{
+                padding: '8px 16px',
+                border: 'none',
+                background: inputMethod === 'upload' ? '#4285f4' : 'transparent',
+                color: inputMethod === 'upload' ? 'white' : '#666',
+                cursor: 'pointer',
+                borderBottom: inputMethod === 'upload' ? '2px solid #4285f4' : '2px solid transparent',
+                marginBottom: '-2px',
+              }}
+            >
+              📁 Upload Photo
+            </button>
+          </div>
+
+          {/* Text Input */}
+          {inputMethod === 'text' && (
+            <div>
+              <textarea
+                value={inputText}
+                onChange={(e) => {
+                  setInputText(e.target.value);
+                  setEvents(null);
+                  setParseResult(null);
+                }}
+                placeholder="Paste or type text here (e.g., event descriptions, schedules, etc.)..."
+                rows={8}
+                style={{ width: '100%', fontFamily: 'monospace', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
+              />
+            </div>
+          )}
+
+          {/* Camera Input */}
+          {inputMethod === 'camera' && (
+            <div>
+              <CameraCapture onCapture={handleImageCapture} />
+              {imagePreview && (
+                <div style={{ marginTop: 16 }}>
+                  <img 
+                    src={imagePreview} 
+                    alt="Captured" 
+                    style={{ maxWidth: '100%', maxHeight: '400px', borderRadius: '4px', border: '1px solid #ddd' }}
+                  />
+                  <button 
+                    onClick={clearInput}
+                    style={{ marginTop: 8, padding: '4px 8px', fontSize: '12px' }}
+                  >
+                    Clear
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* File Upload Input */}
+          {inputMethod === 'upload' && (
+            <div>
+              <input 
+                ref={fileInputRef} 
+                type="file" 
+                accept="image/*" 
+                onChange={handleFileSelect}
+                style={{ marginBottom: 16 }}
+              />
+              {imagePreview && (
+                <div>
+                  <img 
+                    src={imagePreview} 
+                    alt="Uploaded" 
+                    style={{ maxWidth: '100%', maxHeight: '400px', borderRadius: '4px', border: '1px solid #ddd' }}
+                  />
+                  <button 
+                    onClick={clearInput}
+                    style={{ marginTop: 8, padding: '4px 8px', fontSize: '12px' }}
+                  >
+                    Clear
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Parse Button */}
+          <div style={{ marginTop: 16, display: 'flex', alignItems: 'center', gap: 12 }}>
+            <button 
+              onClick={handleParse} 
+              disabled={
+                parsing || 
+                (inputMethod === 'text' && !inputText.trim()) ||
+                ((inputMethod === 'camera' || inputMethod === 'upload') && !selectedImage)
+              }
+              style={{
+                padding: '10px 20px',
+                fontSize: '16px',
+                fontWeight: 'bold',
+                backgroundColor: '#4285f4',
+                color: 'white',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: parsing ? 'not-allowed' : 'pointer',
+                opacity: (
+                  parsing || 
+                  (inputMethod === 'text' && !inputText.trim()) ||
+                  ((inputMethod === 'camera' || inputMethod === 'upload') && !selectedImage)
+                ) ? 0.6 : 1,
+              }}
+            >
+              {parsing ? 'Analyzing with AI…' : 'Analyze with AI'}
+            </button>
+            {!parsing && (
               <div style={{ fontSize: '12px', color: '#666' }}>
                 {import.meta.env.VITE_GEMINI_API_KEY ? (
-                  <span>Will use: <strong>Gemini AI</strong> ({import.meta.env.VITE_GEMINI_MODEL || 'gemini-1.5-flash'})</span>
+                  <span>Using: <strong>Gemini AI</strong> ({import.meta.env.VITE_GEMINI_MODEL || 'gemini-1.5-flash'})</span>
                 ) : (
-                  <span>Will use: <strong>Fallback Heuristic</strong> (Gemini API key not set)</span>
+                  <span>Using: <strong>Fallback Heuristic</strong> (Gemini API key not set)</span>
                 )}
               </div>
             )}
@@ -275,7 +456,7 @@ export default function App() {
 
         {events && (
           <section style={{ marginBottom: 32 }}>
-            <h2>3) Parsed events preview</h2>
+            <h2>2) Parsed Events Preview</h2>
             {parseResult && (
               <div
                 style={{
@@ -306,18 +487,74 @@ export default function App() {
                 )}
               </div>
             )}
+            
             <ul>
               {events.map((ev, idx) => (
-                <li key={idx} style={{ marginBottom: 12, padding: '12px', background: 'white', borderRadius: '4px', border: '1px solid #ddd' }}>
-                  <div><strong>{ev.title}</strong></div>
-                  <div style={{ marginTop: 4, color: '#666' }}>
-                    {new Date(ev.startISO).toLocaleString()} → {new Date(ev.endISO).toLocaleString()}
+                <li key={idx} style={{ marginBottom: 12, padding: '12px', background: 'white', borderRadius: '4px', border: '1px solid #ddd', cursor: 'pointer' }}
+                    onClick={() => setEditingEventIndex(idx)}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.backgroundColor = '#f5f5f5';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.backgroundColor = 'white';
+                    }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
+                    <div style={{ flex: 1 }}>
+                      <div><strong>{ev.title}</strong></div>
+                      <div style={{ marginTop: 4, color: '#666' }}>
+                        {new Date(ev.startISO).toLocaleString()} → {new Date(ev.endISO).toLocaleString()}
+                      </div>
+                      {ev.location && <div style={{ marginTop: 4 }}>📍 {ev.location}</div>}
+                      {ev.description && <div style={{ marginTop: 4, color: '#666' }}>{ev.description}</div>}
+                    </div>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setEditingEventIndex(idx);
+                      }}
+                      style={{
+                        marginLeft: '12px',
+                        padding: '4px 12px',
+                        border: '1px solid #4285f4',
+                        borderRadius: '4px',
+                        backgroundColor: 'white',
+                        color: '#4285f4',
+                        cursor: 'pointer',
+                        fontSize: '12px',
+                      }}
+                    >
+                      Edit
+                    </button>
                   </div>
-                  {ev.location && <div style={{ marginTop: 4 }}>📍 {ev.location}</div>}
-                  {ev.description && <div style={{ marginTop: 4, color: '#666' }}>{ev.description}</div>}
                 </li>
               ))}
             </ul>
+            
+            {/* Show extracted raw text below the events list */}
+            {parseResult?.extractedText && (
+              <div style={{ marginTop: 24, padding: '12px', background: '#f5f5f5', borderRadius: '6px', border: '1px solid #ddd' }}>
+                <div style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '8px', color: '#333' }}>
+                  📝 Raw Text Extracted from Image:
+                </div>
+                <div style={{ 
+                  fontSize: '13px', 
+                  color: '#555', 
+                  fontFamily: 'monospace',
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  maxHeight: '200px',
+                  overflowY: 'auto',
+                  padding: '8px',
+                  background: 'white',
+                  borderRadius: '4px',
+                  border: '1px solid #ddd'
+                }}>
+                  {parseResult.extractedText}
+                </div>
+              </div>
+            )}
+            
             <div style={{ marginTop: 16 }}>
               <button onClick={createEvents} disabled={creating || !user}>
                 {creating ? 'Creating…' : 'Create in Google Calendar'}
@@ -342,6 +579,18 @@ export default function App() {
       <footer style={{ marginTop: 48, color: '#666', fontSize: '14px' }}>
         <small>Note: This is a client-side application. API keys are loaded from environment variables.</small>
       </footer>
+
+      {/* Event Edit Modal */}
+      {events && editingEventIndex !== null && (
+        <EventEditModal
+          event={events[editingEventIndex]}
+          index={editingEventIndex}
+          total={events.length}
+          isOpen={editingEventIndex !== null}
+          onClose={() => setEditingEventIndex(null)}
+          onSave={handleEventSave}
+        />
+      )}
     </div>
   );
 }
