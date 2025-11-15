@@ -139,12 +139,52 @@ export async function createCalendarEvent(event: {
   location?: string;
   startISO: string;
   endISO: string;
+  allDay?: boolean;
 }): Promise<void> {
   const token = getAccessToken();
   if (!token) {
     throw new Error('Not authenticated');
   }
 
+  // For all-day events, use date format (YYYY-MM-DD) instead of dateTime
+  if (event.allDay) {
+    const startDate = new Date(event.startISO);
+    const endDate = new Date(event.endISO);
+    
+    // Format as YYYY-MM-DD
+    const startDateStr = `${startDate.getFullYear()}-${String(startDate.getMonth() + 1).padStart(2, '0')}-${String(startDate.getDate()).padStart(2, '0')}`;
+    // For all-day events, end date should be the next day
+    const endDateObj = new Date(endDate);
+    endDateObj.setDate(endDateObj.getDate() + 1);
+    const endDateStr = `${endDateObj.getFullYear()}-${String(endDateObj.getMonth() + 1).padStart(2, '0')}-${String(endDateObj.getDate()).padStart(2, '0')}`;
+    
+    const response = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        summary: event.title,
+        description: event.description,
+        location: event.location,
+        start: {
+          date: startDateStr,
+        },
+        end: {
+          date: endDateStr,
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.error?.message || `Failed to create event: ${response.statusText}`);
+    }
+    return;
+  }
+
+  // For timed events, use dateTime format
   const response = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events', {
     method: 'POST',
     headers: {

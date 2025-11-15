@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import type { ParsedEvent } from '../lib/parseWithAI';
+import { getDateComponentsInTimezone, createDateFromTimezone } from '../lib/dateUtils';
 
 type Props = {
   event: ParsedEvent;
@@ -11,87 +12,98 @@ type Props = {
 };
 
 export default function EventEditModal({ event, index, total, isOpen, onClose, onSave }: Props) {
-  const [editedEvent, setEditedEvent] = useState<ParsedEvent>(event);
+  const [editedEvent, setEditedEvent] = useState<ParsedEvent>({
+    ...event,
+    description: event.description || '',
+  });
   const [startDate, setStartDate] = useState('');
   const [startTime, setStartTime] = useState('');
   const [endDate, setEndDate] = useState('');
   const [endTime, setEndTime] = useState('');
+  const [allDay, setAllDay] = useState(event.allDay || false);
+  const [displayTimezone, setDisplayTimezone] = useState('America/New_York'); // Default to EST
 
-  // Initialize form fields from ISO strings
+  // Update form fields when event or displayTimezone changes
   useEffect(() => {
     if (event) {
-      const start = new Date(event.startISO);
-      const end = new Date(event.endISO);
+      // Use displayTimezone for display/editing
+      const startComponents = getDateComponentsInTimezone(event.startISO, displayTimezone);
+      const endComponents = getDateComponentsInTimezone(event.endISO, displayTimezone);
 
-      // Use local time for display/editing (better UX)
-      // Format date as YYYY-MM-DD for date input (using local date)
-      const startYear = start.getFullYear();
-      const startMonth = String(start.getMonth() + 1).padStart(2, '0');
-      const startDay = String(start.getDate()).padStart(2, '0');
-      setStartDate(`${startYear}-${startMonth}-${startDay}`);
+      // Format date as YYYY-MM-DD for date input (using displayTimezone)
+      setStartDate(`${startComponents.year}-${String(startComponents.month).padStart(2, '0')}-${String(startComponents.day).padStart(2, '0')}`);
+      setEndDate(`${endComponents.year}-${String(endComponents.month).padStart(2, '0')}-${String(endComponents.day).padStart(2, '0')}`);
 
-      const endYear = end.getFullYear();
-      const endMonth = String(end.getMonth() + 1).padStart(2, '0');
-      const endDay = String(end.getDate()).padStart(2, '0');
-      setEndDate(`${endYear}-${endMonth}-${endDay}`);
+      // Format time as HH:mm for time input (using displayTimezone)
+      setStartTime(`${String(startComponents.hours).padStart(2, '0')}:${String(startComponents.minutes).padStart(2, '0')}`);
+      setEndTime(`${String(endComponents.hours).padStart(2, '0')}:${String(endComponents.minutes).padStart(2, '0')}`);
 
-      // Format time as HH:mm for time input (using local time)
-      const startHours = String(start.getHours()).padStart(2, '0');
-      const startMinutes = String(start.getMinutes()).padStart(2, '0');
-      setStartTime(`${startHours}:${startMinutes}`);
-
-      const endHours = String(end.getHours()).padStart(2, '0');
-      const endMinutes = String(end.getMinutes()).padStart(2, '0');
-      setEndTime(`${endHours}:${endMinutes}`);
-
-      setEditedEvent(event);
+      setEditedEvent({
+        ...event,
+        description: event.description || '', // Ensure description is always a string
+      });
+      setAllDay(event.allDay || false);
     }
-  }, [event]);
+  }, [event, displayTimezone]);
 
   if (!isOpen) return null;
 
   const handleSave = () => {
-    // Combine date and time - treat as local time, then convert to UTC for ISO
-    // Create date objects in local timezone
-    const startLocal = new Date(`${startDate}T${startTime}:00`);
-    const endLocal = new Date(`${endDate}T${endTime}:00`);
+    let updated: ParsedEvent;
+    
+    if (allDay) {
+      // For all-day events, set to start and end of day in the display timezone
+      // Convert to UTC for storage
+      const startTz = createDateFromTimezone(startDate, '00:00', displayTimezone);
+      const endTz = createDateFromTimezone(endDate, '23:59', displayTimezone);
+      
+      updated = {
+        ...editedEvent,
+        allDay: true,
+        startISO: startTz.toISOString(),
+        endISO: endTz.toISOString(),
+      };
+    } else {
+      // For timed events, combine date and time (in displayTimezone)
+      // Convert to UTC for storage
+      const startTz = createDateFromTimezone(startDate, startTime, displayTimezone);
+      const endTz = createDateFromTimezone(endDate, endTime, displayTimezone);
 
-    // Convert to ISO strings (which are in UTC)
-    const updated: ParsedEvent = {
-      ...editedEvent,
-      startISO: startLocal.toISOString(),
-      endISO: endLocal.toISOString(),
-    };
+      updated = {
+        ...editedEvent,
+        allDay: false,
+        startISO: startTz.toISOString(),
+        endISO: endTz.toISOString(),
+      };
+    }
 
     onSave(updated);
     onClose();
   };
 
   const handleCancel = () => {
-    // Reset to original event
-    const start = new Date(event.startISO);
-    const end = new Date(event.endISO);
-    
-    const startYear = start.getFullYear();
-    const startMonth = String(start.getMonth() + 1).padStart(2, '0');
-    const startDay = String(start.getDate()).padStart(2, '0');
-    setStartDate(`${startYear}-${startMonth}-${startDay}`);
-
-    const endYear = end.getFullYear();
-    const endMonth = String(end.getMonth() + 1).padStart(2, '0');
-    const endDay = String(end.getDate()).padStart(2, '0');
-    setEndDate(`${endYear}-${endMonth}-${endDay}`);
-
-    const startHours = String(start.getHours()).padStart(2, '0');
-    const startMinutes = String(start.getMinutes()).padStart(2, '0');
-    setStartTime(`${startHours}:${startMinutes}`);
-    
-    const endHours = String(end.getHours()).padStart(2, '0');
-    const endMinutes = String(end.getMinutes()).padStart(2, '0');
-    setEndTime(`${endHours}:${endMinutes}`);
-    
+    // Reset to original event and EST timezone
+    setDisplayTimezone('America/New_York');
     setEditedEvent(event);
     onClose();
+  };
+  
+  const handleTimezoneChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newTz = e.target.value.trim();
+    if (newTz) {
+      // Validate timezone by trying to format a date with it
+      try {
+        const testDate = new Date();
+        testDate.toLocaleString('en-US', { timeZone: newTz });
+        setDisplayTimezone(newTz);
+      } catch (err) {
+        // Invalid timezone, ignore
+        console.warn('Invalid timezone:', newTz);
+      }
+    } else {
+      // Empty string, reset to EST
+      setDisplayTimezone('America/New_York');
+    }
   };
 
   return (
@@ -209,10 +221,23 @@ export default function EventEditModal({ event, index, total, isOpen, onClose, o
             />
           </div>
 
+          {/* All Day Checkbox */}
+          <div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={allDay}
+                onChange={(e) => setAllDay(e.target.checked)}
+                style={{ width: '18px', height: '18px', cursor: 'pointer' }}
+              />
+              <span style={{ fontWeight: 'bold' }}>All Day Event</span>
+            </label>
+          </div>
+
           {/* Start Date/Time */}
           <div>
             <label style={{ display: 'block', marginBottom: '4px', fontWeight: 'bold' }}>
-              Start Date & Time *
+              Start Date{allDay ? '' : ' & Time'} *
             </label>
             <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
               <input
@@ -228,26 +253,28 @@ export default function EventEditModal({ event, index, total, isOpen, onClose, o
                   fontSize: '14px',
                 }}
               />
-              <input
-                type="time"
-                value={startTime}
-                onChange={(e) => setStartTime(e.target.value)}
-                style={{
-                  flex: '1',
-                  minWidth: '120px',
-                  padding: '8px',
-                  border: '1px solid #ddd',
-                  borderRadius: '4px',
-                  fontSize: '14px',
-                }}
-              />
+              {!allDay && (
+                <input
+                  type="time"
+                  value={startTime}
+                  onChange={(e) => setStartTime(e.target.value)}
+                  style={{
+                    flex: '1',
+                    minWidth: '120px',
+                    padding: '8px',
+                    border: '1px solid #ddd',
+                    borderRadius: '4px',
+                    fontSize: '14px',
+                  }}
+                />
+              )}
             </div>
           </div>
 
           {/* End Date/Time */}
           <div>
             <label style={{ display: 'block', marginBottom: '4px', fontWeight: 'bold' }}>
-              End Date & Time *
+              End Date{allDay ? '' : ' & Time'} *
             </label>
             <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
               <input
@@ -263,44 +290,54 @@ export default function EventEditModal({ event, index, total, isOpen, onClose, o
                   fontSize: '14px',
                 }}
               />
+              {!allDay && (
+                <input
+                  type="time"
+                  value={endTime}
+                  onChange={(e) => setEndTime(e.target.value)}
+                  style={{
+                    flex: '1',
+                    minWidth: '120px',
+                    padding: '8px',
+                    border: '1px solid #ddd',
+                    borderRadius: '4px',
+                    fontSize: '14px',
+                  }}
+                />
+              )}
+            </div>
+          </div>
+
+          {/* Timezone Selection */}
+          {!allDay && (
+            <div>
+              <label style={{ display: 'block', marginBottom: '4px', fontWeight: 'bold' }}>
+                Display Timezone
+              </label>
               <input
-                type="time"
-                value={endTime}
-                onChange={(e) => setEndTime(e.target.value)}
+                type="text"
+                value={displayTimezone}
+                onChange={handleTimezoneChange}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleTimezoneChange(e as any);
+                  }
+                }}
                 style={{
-                  flex: '1',
-                  minWidth: '120px',
+                  width: '100%',
                   padding: '8px',
                   border: '1px solid #ddd',
                   borderRadius: '4px',
                   fontSize: '14px',
                 }}
+                placeholder="e.g., America/New_York, UTC, America/Los_Angeles, Europe/London"
               />
+              <div style={{ fontSize: '12px', color: '#666', marginTop: '4px' }}>
+                Times above are displayed in this timezone. Default is EST (America/New_York). Type a timezone and press Enter to convert.
+              </div>
             </div>
-          </div>
-
-          {/* Timezone */}
-          <div>
-            <label style={{ display: 'block', marginBottom: '4px', fontWeight: 'bold' }}>
-              Timezone
-            </label>
-            <input
-              type="text"
-              value={editedEvent.timezone || ''}
-              onChange={(e) => setEditedEvent({ ...editedEvent, timezone: e.target.value })}
-              style={{
-                width: '100%',
-                padding: '8px',
-                border: '1px solid #ddd',
-                borderRadius: '4px',
-                fontSize: '14px',
-              }}
-              placeholder="e.g., America/New_York, Europe/London (optional)"
-            />
-            <div style={{ fontSize: '12px', color: '#666', marginTop: '4px' }}>
-              Leave empty to use UTC. Use IANA timezone format.
-            </div>
-          </div>
+          )}
         </div>
 
         {/* Action Buttons */}

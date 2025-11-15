@@ -503,7 +503,15 @@ export default function App() {
                     <div style={{ flex: 1 }}>
                       <div><strong>{ev.title}</strong></div>
                       <div style={{ marginTop: 4, color: '#666' }}>
-                        {new Date(ev.startISO).toLocaleString()} → {new Date(ev.endISO).toLocaleString()}
+                        {ev.allDay ? (
+                          <>
+                            {new Date(ev.startISO).toLocaleDateString('en-US', { timeZone: 'America/New_York' })} {ev.startISO !== ev.endISO ? `→ ${new Date(ev.endISO).toLocaleDateString('en-US', { timeZone: 'America/New_York' })}` : ''} <span style={{ fontWeight: 'bold', color: '#4285f4' }}>(All Day)</span>
+                          </>
+                        ) : (
+                          <>
+                            {new Date(ev.startISO).toLocaleString('en-US', { timeZone: 'America/New_York' })} → {new Date(ev.endISO).toLocaleString('en-US', { timeZone: 'America/New_York' })}
+                          </>
+                        )}
                       </div>
                       {ev.location && <div style={{ marginTop: 4 }}>📍 {ev.location}</div>}
                       {ev.description && <div style={{ marginTop: 4, color: '#666' }}>{ev.description}</div>}
