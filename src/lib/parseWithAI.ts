@@ -95,9 +95,23 @@ Return ONLY a JSON object with this EXACT structure (no markdown, no code blocks
     "startISO": "ISO 8601 UTC string like ${currentYear}-11-29T10:30:00Z",
     "endISO": "ISO 8601 UTC string like ${currentYear}-11-29T16:00:00Z",
     "timezone": "IANA timezone (optional)",
-    "allDay": false
+    "allDay": false,
+    "hasFreeFood": false,
+    "registrationNeeded": null
   }
 }
+
+FREE FOOD DETECTION:
+- Set "hasFreeFood": true if the text mentions:
+  * "free food", "free food!", "FREE FOOD", "free lunch", "free dinner", "free snacks", etc.
+  * Any variation indicating complimentary food
+- Set "hasFreeFood": false if no mention of free food
+
+REGISTRATION DETECTION:
+- Set "registrationNeeded": true if the text explicitly mentions:
+  * "registration required", "register", "RSVP", "sign up", "registration needed", etc.
+- Set "registrationNeeded": false if the text explicitly says no registration needed
+- Set "registrationNeeded": null if registration is not mentioned at all
 
 CRITICAL: Return ONLY the raw JSON object, no markdown code blocks, no \`\`\`json, no explanation. Start with { and end with }.`
     : `Step 1: Extract the raw text (copy it exactly as provided).
@@ -113,9 +127,23 @@ Return ONLY a JSON object with this EXACT structure (no markdown, no code blocks
     "startISO": "ISO 8601 UTC string like ${currentYear}-11-29T10:30:00Z",
     "endISO": "ISO 8601 UTC string like ${currentYear}-11-29T16:00:00Z",
     "timezone": "IANA timezone (optional)",
-    "allDay": false
+    "allDay": false,
+    "hasFreeFood": false,
+    "registrationNeeded": null
   }
 }
+
+FREE FOOD DETECTION:
+- Set "hasFreeFood": true if the text mentions:
+  * "free food", "free food!", "FREE FOOD", "free lunch", "free dinner", "free snacks", etc.
+  * Any variation indicating complimentary food
+- Set "hasFreeFood": false if no mention of free food
+
+REGISTRATION DETECTION:
+- Set "registrationNeeded": true if the text explicitly mentions:
+  * "registration required", "register", "RSVP", "sign up", "registration needed", etc.
+- Set "registrationNeeded": false if the text explicitly says no registration needed
+- Set "registrationNeeded": null if registration is not mentioned at all
 
 CRITICAL: Return ONLY the raw JSON object, no markdown code blocks, no \`\`\`json, no explanation. Start with { and end with }.
 
@@ -539,9 +567,33 @@ ${input}`;
         }
       }
       
+      // Build description with hashtags
+      let description = rawText || item.description || item.detail || item.details || '';
+      const hashtags: string[] = [];
+      
+      // Check for free food
+      const hasFreeFood = item.hasFreeFood === true || item.hasFreeFood === 'true';
+      if (hasFreeFood) {
+        hashtags.push('#Free Food');
+      }
+      
+      // Check for registration
+      const registrationNeeded = item.registrationNeeded;
+      if (registrationNeeded === true || registrationNeeded === 'true') {
+        hashtags.push('#Registration Needed');
+      } else if (registrationNeeded === null || registrationNeeded === undefined) {
+        hashtags.push('#Registration Not Mentioned');
+      }
+      // If registrationNeeded is false, don't add anything
+      
+      // Prepend hashtags to description
+      if (hashtags.length > 0) {
+        description = hashtags.join(' ') + '\n\n' + description;
+      }
+      
       const normalizedItem: any = {
         title: item.title || item.name || item.summary || 'Untitled Event',
-        description: rawText || item.description || item.detail || item.details || '',
+        description: description,
         location: item.location || item.place || item.venue || '',
         startISO,
         endISO,
@@ -582,8 +634,25 @@ ${input}`;
     if (rawText) {
       const currentYear = new Date().getFullYear();
       const fixedEvents = parsed.map((event, eventIdx) => {
-        // Update description to use rawText if available
-        let updatedEvent = rawText ? { ...event, description: rawText } : event;
+        // Description already has hashtags from normalization
+        // Ensure rawText is included in description if it's not already there
+        let updatedEvent = event;
+        
+        if (rawText) {
+          // Check if description already contains rawText
+          if (!event.description || !event.description.includes(rawText)) {
+            // Extract hashtags if they exist at the start
+            const hashtagMatch = event.description?.match(/^(#[^\n]+(?:\s+#[^\n]+)*\n\n)/);
+            const hashtags = hashtagMatch ? hashtagMatch[1] : '';
+            const descriptionWithoutHashtags = event.description?.replace(/^(#[^\n]+(?:\s+#[^\n]+)*\n\n)/, '') || '';
+            
+            // Combine: hashtags + rawText (or existing description if no rawText match)
+            updatedEvent = { 
+              ...event, 
+              description: hashtags + (descriptionWithoutHashtags || rawText)
+            };
+          }
+        }
         
         // Check if year is mentioned in rawText
         const yearInText = rawText.match(/\b(19|20)\d{2}\b/);

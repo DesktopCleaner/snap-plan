@@ -75,8 +75,9 @@ export default function App() {
   const [bulkProgress, setBulkProgress] = useState<{ current: number; total: number } | null>(null);
   // COMMENTED OUT: Raw text display state
   // const [bulkExtractedTexts, setBulkExtractedTexts] = useState<Array<{ fileName: string; text: string }>>([]);
-  // const [expandedTexts, setExpandedTexts] = useState<Set<number>>(new Set());
+  //   const [expandedTexts, setExpandedTexts] = useState<Set<number>>(new Set());
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const autoParseTriggeredRef = useRef<string | null>(null);
 
   // Effect to fetch config from backend and initialize Google Auth
   useEffect(() => {
@@ -175,6 +176,28 @@ export default function App() {
       }
     };
   }, [imagePreview]);
+
+  // Automatically analyze image when uploaded/captured (but not for bulk upload)
+  useEffect(() => {
+    if (selectedImage && (inputMethod === 'camera' || inputMethod === 'upload') && !bulkUploading && !parsing && !events) {
+      // Create a unique identifier for this image to prevent duplicate parsing
+      const imageId = selectedImage instanceof File ? `${selectedImage.name}-${selectedImage.size}` : 'camera-capture';
+      
+      // Only auto-parse if we haven't already triggered for this image
+      if (autoParseTriggeredRef.current !== imageId) {
+        autoParseTriggeredRef.current = imageId;
+        const timer = setTimeout(() => {
+          handleParse();
+        }, 200); // Small delay to ensure state is fully updated
+        
+        return () => clearTimeout(timer);
+      }
+    } else if (!selectedImage) {
+      // Reset the ref when image is cleared
+      autoParseTriggeredRef.current = null;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedImage, inputMethod, bulkUploading]);
 
   const handleImageCapture = async (blob: Blob) => {
     setSelectedImage(blob);
@@ -303,6 +326,8 @@ export default function App() {
     setEvents(null);
     setIcs(null);
     setEditingEventIndex(null);
+    // Reset auto-parse trigger when starting new parse
+    autoParseTriggeredRef.current = null;
     
     try {
       // Send text or image directly to AI
