@@ -5,56 +5,56 @@ import { parseWithAI, type ParsedEvent, type ParseResult } from './lib/parseWith
 import { toIcs } from './lib/ics';
 import { initializeGoogleAuth, signIn, signOut, createCalendarEvent, getAccessToken, type GoogleUser } from './lib/googleAuth';
 
-// Component for displaying single extracted text with fold/unfold
-function SingleTextDisplay({ text }: { text: string }) {
-  const [isExpanded, setIsExpanded] = useState(false);
+// COMMENTED OUT: Component for displaying single extracted text with fold/unfold
+// function SingleTextDisplay({ text }: { text: string }) {
+//   const [isExpanded, setIsExpanded] = useState(false);
 
-  return (
-    <div style={{ marginTop: 24, padding: '12px', background: '#f5f5f5', borderRadius: '6px', border: '1px solid #ddd' }}>
-      <div style={{ 
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center'
-      }}>
-        <div style={{ fontSize: '14px', fontWeight: 'bold', color: '#333' }}>
-          📝 Raw Text Extracted from Image:
-        </div>
-        <button
-          onClick={() => setIsExpanded(!isExpanded)}
-          style={{
-            padding: '4px 8px',
-            border: '1px solid #ddd',
-            borderRadius: '4px',
-            background: 'white',
-            cursor: 'pointer',
-            fontSize: '12px',
-            color: '#666'
-          }}
-        >
-          {isExpanded ? '▼ Collapse' : '▶ Expand'}
-        </button>
-      </div>
-      {isExpanded && (
-        <div style={{ 
-          marginTop: '8px',
-          fontSize: '13px', 
-          color: '#555', 
-          fontFamily: 'monospace',
-          whiteSpace: 'pre-wrap',
-          wordBreak: 'break-word',
-          maxHeight: '200px',
-          overflowY: 'auto',
-          padding: '8px',
-          background: 'white',
-          borderRadius: '4px',
-          border: '1px solid #ddd'
-        }}>
-          {text}
-        </div>
-      )}
-    </div>
-  );
-}
+//   return (
+//     <div style={{ marginTop: 24, padding: '12px', background: '#f5f5f5', borderRadius: '6px', border: '1px solid #ddd' }}>
+//       <div style={{ 
+//         display: 'flex',
+//         justifyContent: 'space-between',
+//         alignItems: 'center'
+//       }}>
+//         <div style={{ fontSize: '14px', fontWeight: 'bold', color: '#333' }}>
+//           📝 Raw Text Extracted from Image:
+//         </div>
+//         <button
+//           onClick={() => setIsExpanded(!isExpanded)}
+//           style={{
+//             padding: '4px 8px',
+//             border: '1px solid #ddd',
+//             borderRadius: '4px',
+//             background: 'white',
+//             cursor: 'pointer',
+//             fontSize: '12px',
+//             color: '#666'
+//           }}
+//         >
+//           {isExpanded ? '▼ Collapse' : '▶ Expand'}
+//         </button>
+//       </div>
+//       {isExpanded && (
+//         <div style={{ 
+//           marginTop: '8px',
+//           fontSize: '13px', 
+//           color: '#555', 
+//           fontFamily: 'monospace',
+//           whiteSpace: 'pre-wrap',
+//           wordBreak: 'break-word',
+//           maxHeight: '200px',
+//           overflowY: 'auto',
+//           padding: '8px',
+//           background: 'white',
+//           borderRadius: '4px',
+//           border: '1px solid #ddd'
+//         }}>
+//           {text}
+//         </div>
+//       )}
+//     </div>
+//   );
+// }
 
 export default function App() {
   const [user, setUser] = useState<GoogleUser | null>(null);
@@ -73,15 +73,17 @@ export default function App() {
   const [editingEventIndex, setEditingEventIndex] = useState<number | null>(null);
   const [bulkUploading, setBulkUploading] = useState(false);
   const [bulkProgress, setBulkProgress] = useState<{ current: number; total: number } | null>(null);
-  const [bulkExtractedTexts, setBulkExtractedTexts] = useState<Array<{ fileName: string; text: string }>>([]);
-  const [expandedTexts, setExpandedTexts] = useState<Set<number>>(new Set());
+  // COMMENTED OUT: Raw text display state
+  // const [bulkExtractedTexts, setBulkExtractedTexts] = useState<Array<{ fileName: string; text: string }>>([]);
+  // const [expandedTexts, setExpandedTexts] = useState<Set<number>>(new Set());
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Effect to fetch config from backend and initialize Google Auth
   useEffect(() => {
     const fetchConfig = async () => {
       try {
-        const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001';
+        // Use relative URL for Vercel deployment, fallback to localhost for dev
+        const backendUrl = import.meta.env.VITE_BACKEND_URL || (import.meta.env.DEV ? 'http://localhost:3001' : '');
         const response = await fetch(`${backendUrl}/api/config`);
         
         if (!response.ok) {
@@ -245,8 +247,8 @@ export default function App() {
         }
       }
       
-      // Store extracted texts for display
-      setBulkExtractedTexts(extractedTextsByImage);
+      // COMMENTED OUT: Store extracted texts for display
+      // setBulkExtractedTexts(extractedTextsByImage);
       
       // Set all collected events
       if (allEvents.length > 0) {
@@ -366,8 +368,9 @@ export default function App() {
     setEvents(null);
     setParseResult(null);
     setIcs(null);
-    setBulkExtractedTexts([]);
-    setExpandedTexts(new Set());
+    // COMMENTED OUT: Clear raw text display state
+    // setBulkExtractedTexts([]);
+    // setExpandedTexts(new Set());
   };
 
   const createEvents = async () => {
@@ -643,9 +646,9 @@ export default function App() {
             >
               {parsing ? 'Analyzing with AI…' : 'Analyze with AI'}
             </button>
-            {!parsing && (
+            {!parsing && parseResult && (
               <div style={{ fontSize: '12px', color: '#666' }}>
-                {parseResult?.method === 'gemini' ? (
+                {parseResult.method === 'gemini' ? (
                   <span>Using: <strong>Gemini AI</strong> ({parseResult.model || 'gemini-2.0-flash'})</span>
                 ) : (
                   <span>Using: <strong>Fallback Heuristic</strong> (Gemini API key not set)</span>
