@@ -44,7 +44,8 @@ function getMimeType(blob: Blob): string {
 
 export async function parseWithAI(input: string | Blob): Promise<ParseResult> {
   // Fetch config from backend
-  const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001';
+  // Use relative URL for Vercel deployment, fallback to localhost for dev
+  const backendUrl = import.meta.env.VITE_BACKEND_URL || (import.meta.env.DEV ? 'http://localhost:3001' : '');
   let config;
   try {
     const configResponse = await fetch(`${backendUrl}/api/config`);
