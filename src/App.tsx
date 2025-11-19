@@ -5,10 +5,61 @@ import { parseWithAI, type ParsedEvent, type ParseResult } from './lib/parseWith
 import { toIcs } from './lib/ics';
 import { initializeGoogleAuth, signIn, signOut, createCalendarEvent, getAccessToken, type GoogleUser } from './lib/googleAuth';
 
+// Component for displaying single extracted text with fold/unfold
+function SingleTextDisplay({ text }: { text: string }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  return (
+    <div style={{ marginTop: 24, padding: '12px', background: '#f5f5f5', borderRadius: '6px', border: '1px solid #ddd' }}>
+      <div style={{ 
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center'
+      }}>
+        <div style={{ fontSize: '14px', fontWeight: 'bold', color: '#333' }}>
+          📝 Raw Text Extracted from Image:
+        </div>
+        <button
+          onClick={() => setIsExpanded(!isExpanded)}
+          style={{
+            padding: '4px 8px',
+            border: '1px solid #ddd',
+            borderRadius: '4px',
+            background: 'white',
+            cursor: 'pointer',
+            fontSize: '12px',
+            color: '#666'
+          }}
+        >
+          {isExpanded ? '▼ Collapse' : '▶ Expand'}
+        </button>
+      </div>
+      {isExpanded && (
+        <div style={{ 
+          marginTop: '8px',
+          fontSize: '13px', 
+          color: '#555', 
+          fontFamily: 'monospace',
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+          maxHeight: '200px',
+          overflowY: 'auto',
+          padding: '8px',
+          background: 'white',
+          borderRadius: '4px',
+          border: '1px solid #ddd'
+        }}>
+          {text}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   const [user, setUser] = useState<GoogleUser | null>(null);
   const [inputText, setInputText] = useState('');
-  const [inputMethod, setInputMethod] = useState<'text' | 'camera' | 'upload'>('text');
+  const [inputMethod, setInputMethod] = useState<'text' | 'camera' | 'upload'>('camera');
   const [parsing, setParsing] = useState(false);
   const [creating, setCreating] = useState(false);
   const [events, setEvents] = useState<ParsedEvent[] | null>(null);
@@ -20,6 +71,10 @@ export default function App() {
   const [selectedImage, setSelectedImage] = useState<Blob | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [editingEventIndex, setEditingEventIndex] = useState<number | null>(null);
+  const [bulkUploading, setBulkUploading] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState<{ current: number; total: number } | null>(null);
+  const [bulkExtractedTexts, setBulkExtractedTexts] = useState<Array<{ fileName: string; text: string }>>([]);
+  const [expandedTexts, setExpandedTexts] = useState<Set<number>>(new Set());
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Effect to fetch config from backend and initialize Google Auth
@@ -128,13 +183,107 @@ export default function App() {
   };
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    
+    // If multiple files selected, process them in bulk
+    if (files.length > 1) {
+      await handleBulkUpload(Array.from(files));
+      return;
+    }
+    
+    // Single file - use existing behavior
+    const file = files[0];
     setSelectedImage(file);
     setInputMethod('upload');
     // Create preview
     const url = URL.createObjectURL(file);
     setImagePreview(url);
+  };
+
+  const handleBulkUpload = async (files: File[]) => {
+    setBulkUploading(true);
+    setBulkProgress({ current: 0, total: files.length });
+    setInputMethod('upload');
+    setEvents(null);
+    setParseResult(null);
+    setIcs(null);
+    setEditingEventIndex(null);
+    
+    const allEvents: ParsedEvent[] = [];
+    const allParseResults: ParseResult[] = [];
+    const extractedTextsByImage: Array<{ fileName: string; text: string }> = [];
+    
+    try {
+      // Process each file one by one
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        setBulkProgress({ current: i + 1, total: files.length });
+        
+        try {
+          console.log(`Processing image ${i + 1}/${files.length}: ${file.name}`);
+          const result = await parseWithAI(file);
+          allParseResults.push(result);
+          
+          // Store extracted text for this image
+          if (result.extractedText) {
+            extractedTextsByImage.push({
+              fileName: file.name,
+              text: result.extractedText,
+            });
+          }
+          
+          if (result.events && result.events.length > 0) {
+            allEvents.push(...result.events);
+            console.log(`✓ Found ${result.events.length} event(s) in ${file.name}`);
+          } else {
+            console.log(`⚠ No events found in ${file.name}`);
+          }
+        } catch (error: any) {
+          console.error(`Error processing ${file.name}:`, error);
+          // Continue with next file even if one fails
+        }
+      }
+      
+      // Store extracted texts for display
+      setBulkExtractedTexts(extractedTextsByImage);
+      
+      // Set all collected events
+      if (allEvents.length > 0) {
+        setEvents(allEvents);
+        setParseResult({
+          events: allEvents,
+          method: allParseResults.some(r => r.method === 'gemini') ? 'gemini' : 'fallback',
+          model: allParseResults.find(r => r.model)?.model,
+          extractedText: allParseResults.map(r => r.extractedText).filter(Boolean).join('\n\n---\n\n'),
+        });
+        
+        // Generate ICS for all events
+        try {
+          const icsContent = toIcs(allEvents);
+          setIcs(icsContent);
+        } catch (err) {
+          console.error('ICS generation failed:', err);
+          setIcs(null);
+        }
+        
+        // Automatically open first event for editing
+        setEditingEventIndex(0);
+        
+        alert(`Successfully processed ${files.length} image(s). Found ${allEvents.length} event(s) total.`);
+      } else {
+        alert(`Processed ${files.length} image(s) but no events were found.`);
+      }
+    } catch (error: any) {
+      alert('Bulk upload failed: ' + (error?.message || 'Unknown error'));
+    } finally {
+      setBulkUploading(false);
+      setBulkProgress(null);
+      // Clear file input
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
   };
 
   const handleParse = async () => {
@@ -217,6 +366,8 @@ export default function App() {
     setEvents(null);
     setParseResult(null);
     setIcs(null);
+    setBulkExtractedTexts([]);
+    setExpandedTexts(new Set());
   };
 
   const createEvents = async () => {
@@ -313,23 +464,6 @@ export default function App() {
           <div style={{ display: 'flex', gap: 8, marginBottom: 16, borderBottom: '2px solid #ddd' }}>
             <button
               onClick={() => {
-                setInputMethod('text');
-                clearInput();
-              }}
-              style={{
-                padding: '8px 16px',
-                border: 'none',
-                background: inputMethod === 'text' ? '#4285f4' : 'transparent',
-                color: inputMethod === 'text' ? 'white' : '#666',
-                cursor: 'pointer',
-                borderBottom: inputMethod === 'text' ? '2px solid #4285f4' : '2px solid transparent',
-                marginBottom: '-2px',
-              }}
-            >
-              📝 Paste Text
-            </button>
-            <button
-              onClick={() => {
                 setInputMethod('camera');
                 clearInput();
               }}
@@ -366,26 +500,26 @@ export default function App() {
                 marginBottom: '-2px',
               }}
             >
-              📁 Upload Photo
+              📁 Upload Photo(s)
+            </button>
+            <button
+              onClick={() => {
+                setInputMethod('text');
+                clearInput();
+              }}
+              style={{
+                padding: '8px 16px',
+                border: 'none',
+                background: inputMethod === 'text' ? '#4285f4' : 'transparent',
+                color: inputMethod === 'text' ? 'white' : '#666',
+                cursor: 'pointer',
+                borderBottom: inputMethod === 'text' ? '2px solid #4285f4' : '2px solid transparent',
+                marginBottom: '-2px',
+              }}
+            >
+              📝 Paste Text
             </button>
           </div>
-
-          {/* Text Input */}
-          {inputMethod === 'text' && (
-            <div>
-              <textarea
-                value={inputText}
-                onChange={(e) => {
-                  setInputText(e.target.value);
-                  setEvents(null);
-                  setParseResult(null);
-                }}
-                placeholder="Paste or type text here (e.g., event descriptions, schedules, etc.)..."
-                rows={8}
-                style={{ width: '100%', fontFamily: 'monospace', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
-              />
-            </div>
-          )}
 
           {/* Camera Input */}
           {inputMethod === 'camera' && (
@@ -416,9 +550,37 @@ export default function App() {
                 ref={fileInputRef} 
                 type="file" 
                 accept="image/*" 
+                multiple
                 onChange={handleFileSelect}
                 style={{ marginBottom: 16 }}
               />
+              {bulkUploading && bulkProgress && (
+                <div style={{ 
+                  marginBottom: 16, 
+                  padding: '12px', 
+                  background: '#e3f2fd', 
+                  borderRadius: '4px',
+                  border: '1px solid #2196f3'
+                }}>
+                  <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>
+                    Processing images... ({bulkProgress.current} / {bulkProgress.total})
+                  </div>
+                  <div style={{ 
+                    width: '100%', 
+                    background: '#fff', 
+                    borderRadius: '4px', 
+                    height: '20px',
+                    overflow: 'hidden'
+                  }}>
+                    <div style={{
+                      width: `${(bulkProgress.current / bulkProgress.total) * 100}%`,
+                      background: '#2196f3',
+                      height: '100%',
+                      transition: 'width 0.3s ease'
+                    }} />
+                  </div>
+                </div>
+              )}
               {imagePreview && (
                 <div>
                   <img 
@@ -434,6 +596,23 @@ export default function App() {
                   </button>
                 </div>
               )}
+            </div>
+          )}
+
+          {/* Text Input */}
+          {inputMethod === 'text' && (
+            <div>
+              <textarea
+                value={inputText}
+                onChange={(e) => {
+                  setInputText(e.target.value);
+                  setEvents(null);
+                  setParseResult(null);
+                }}
+                placeholder="Paste or type text here (e.g., event descriptions, schedules, etc.)..."
+                rows={8}
+                style={{ width: '100%', fontFamily: 'monospace', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
+              />
             </div>
           )}
 
@@ -561,45 +740,104 @@ export default function App() {
               ))}
             </ul>
             
-            {/* Show extracted raw text below the events list */}
-            {parseResult?.extractedText && (
-              <div style={{ marginTop: 24, padding: '12px', background: '#f5f5f5', borderRadius: '6px', border: '1px solid #ddd' }}>
-                <div style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '8px', color: '#333' }}>
-                  📝 Raw Text Extracted from Image:
+            {/* COMMENTED OUT: Raw text display functionality */}
+            {/* Show extracted texts from bulk upload
+            {bulkExtractedTexts.length > 0 && (
+              <div style={{ marginTop: 24 }}>
+                <div style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '12px', color: '#333' }}>
+                  📝 Raw Text Extracted from Images:
                 </div>
-                <div style={{ 
-                  fontSize: '13px', 
-                  color: '#555', 
-                  fontFamily: 'monospace',
-                  whiteSpace: 'pre-wrap',
-                  wordBreak: 'break-word',
-                  maxHeight: '200px',
-                  overflowY: 'auto',
-                  padding: '8px',
-                  background: 'white',
-                  borderRadius: '4px',
-                  border: '1px solid #ddd'
-                }}>
-                  {parseResult.extractedText}
-                </div>
+                {bulkExtractedTexts.map((item, idx) => {
+                  const isExpanded = expandedTexts.has(idx);
+                  
+                  return (
+                    <div key={idx} style={{ 
+                      marginBottom: 16, 
+                      padding: '12px', 
+                      background: '#f5f5f5', 
+                      borderRadius: '6px', 
+                      border: '1px solid #ddd' 
+                    }}>
+                      <div style={{ 
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center'
+                      }}>
+                        <div style={{ 
+                          fontWeight: 'bold', 
+                          color: '#4285f4',
+                          fontSize: '13px'
+                        }}>
+                          📷 {item.fileName}
+                        </div>
+                        <button
+                          onClick={() => {
+                            const newExpanded = new Set(expandedTexts);
+                            if (isExpanded) {
+                              newExpanded.delete(idx);
+                            } else {
+                              newExpanded.add(idx);
+                            }
+                            setExpandedTexts(newExpanded);
+                          }}
+                          style={{
+                            padding: '4px 8px',
+                            border: '1px solid #ddd',
+                            borderRadius: '4px',
+                            background: 'white',
+                            cursor: 'pointer',
+                            fontSize: '12px',
+                            color: '#666'
+                          }}
+                        >
+                          {isExpanded ? '▼ Collapse' : '▶ Expand'}
+                        </button>
+                      </div>
+                      {isExpanded && (
+                        <div style={{ 
+                          marginTop: '8px',
+                          fontSize: '13px', 
+                          color: '#555', 
+                          fontFamily: 'monospace',
+                          whiteSpace: 'pre-wrap',
+                          wordBreak: 'break-word',
+                          maxHeight: '200px',
+                          overflowY: 'auto',
+                          padding: '8px',
+                          background: 'white',
+                          borderRadius: '4px',
+                          border: '1px solid #ddd'
+                        }}>
+                          {item.text}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
             
+            Show extracted text for single image/text input
+            {parseResult?.extractedText && bulkExtractedTexts.length === 0 && (
+              <SingleTextDisplay text={parseResult.extractedText} />
+            )}
+            */}
+            
             <div style={{ marginTop: 16 }}>
+              {ics && (
+                <button onClick={downloadIcs} style={{ marginRight: 8 }}>
+                  Download .ics (optional)
+                </button>
+              )}
+              {!user && <span style={{ marginRight: 8, color: '#666' }}>Sign in first</span>}
               <button onClick={createEvents} disabled={creating || !user}>
                 {creating ? 'Creating…' : 'Create in Google Calendar'}
               </button>
-              {!user && <span style={{ marginLeft: 8, color: '#666' }}>Sign in first</span>}
               {ics && (
-                <>
-                  <button onClick={downloadIcs} style={{ marginLeft: 8 }}>
-                    Download .ics (optional)
-                  </button>
-                  <details style={{ marginTop: 8 }}>
-                    <summary style={{ cursor: 'pointer', color: '#666' }}>Show ICS preview (optional)</summary>
-                    <pre style={{ whiteSpace: 'pre-wrap', background: '#f5f5f5', padding: '8px', borderRadius: '4px', marginTop: '8px', fontSize: '12px' }}>{ics}</pre>
-                  </details>
-                </>
+                <details style={{ marginTop: 8 }}>
+                  <summary style={{ cursor: 'pointer', color: '#666' }}>Show ICS preview (optional)</summary>
+                  <pre style={{ whiteSpace: 'pre-wrap', background: '#f5f5f5', padding: '8px', borderRadius: '4px', marginTop: '8px', fontSize: '12px' }}>{ics}</pre>
+                </details>
               )}
             </div>
           </section>
