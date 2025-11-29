@@ -3,7 +3,7 @@ import CameraCapture from './components/CameraCapture';
 import EventEditModal from './components/EventEditModal';
 import { parseWithAI, type ParsedEvent, type ParseResult } from './lib/parseWithAI';
 import { toIcs } from './lib/ics';
-import { initializeGoogleAuth, signIn, signOut, createCalendarEvent, getAccessToken, type GoogleUser } from './lib/googleAuth';
+import { initializeGoogleAuth, signIn, signOut, createCalendarEvent, getAccessToken, restoreSession, type GoogleUser } from './lib/googleAuth';
 
 // COMMENTED OUT: Component for displaying single extracted text with fold/unfold
 // function SingleTextDisplay({ text }: { text: string }) {
@@ -83,6 +83,18 @@ export default function App() {
   useEffect(() => {
     const fetchConfig = async () => {
       try {
+        // First, try to restore saved session
+        try {
+          const savedUser = await restoreSession();
+          if (savedUser) {
+            console.log('Restored saved session for:', savedUser.email);
+            setUser(savedUser);
+            setAuthReady(true);
+          }
+        } catch (error) {
+          console.log('No saved session found or session expired');
+        }
+
         // Use relative URL for Vercel deployment, fallback to localhost for dev
         const backendUrl = import.meta.env.VITE_BACKEND_URL || (import.meta.env.DEV ? 'http://localhost:3001' : '');
         const response = await fetch(`${backendUrl}/api/config`);
@@ -125,11 +137,16 @@ export default function App() {
                   setUser(user);
                   setAuthReady(true);
                   setSigningIn(false);
+                  setAuthError(null);
                 },
                 (error) => {
                   console.error('Google Auth Error:', error);
                   setAuthError('Google sign-in failed: ' + error);
                   setSigningIn(false);
+                  // Clear user state if session expired
+                  if (error.includes('expired') || error.includes('Authentication expired')) {
+                    setUser(null);
+                  }
                   alert('Google sign-in failed: ' + error);
                 }
               );
@@ -412,7 +429,12 @@ export default function App() {
       }
       alert(`Successfully created ${events.length} event(s) in Google Calendar!`);
     } catch (error: any) {
-      alert('Failed to create events: ' + (error?.message || 'Unknown error'));
+      const errorMsg = error?.message || 'Unknown error';
+      alert('Failed to create events: ' + errorMsg);
+      // If token expired, clear user state
+      if (errorMsg.includes('expired') || errorMsg.includes('Authentication expired')) {
+        setUser(null);
+      }
     } finally {
       setCreating(false);
     }

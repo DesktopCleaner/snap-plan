@@ -12,10 +12,46 @@ export interface GoogleUser {
   accessToken: string;
 }
 
+const STORAGE_KEY = 'snapplan_auth';
+
 let tokenClient: any = null;
 let accessToken: string | null = null;
 let onSuccessCallback: ((user: GoogleUser) => void) | null = null;
 let onErrorCallback: ((error: string) => void) | null = null;
+
+// Load saved auth from localStorage
+function loadSavedAuth(): { user: GoogleUser; token: string } | null {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (parsed.user && parsed.token) {
+        return parsed;
+      }
+    }
+  } catch (error) {
+    console.error('Failed to load saved auth:', error);
+  }
+  return null;
+}
+
+// Save auth to localStorage
+function saveAuth(user: GoogleUser, token: string): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ user, token }));
+  } catch (error) {
+    console.error('Failed to save auth:', error);
+  }
+}
+
+// Clear saved auth from localStorage
+function clearSavedAuth(): void {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch (error) {
+    console.error('Failed to clear saved auth:', error);
+  }
+}
 
 export function initializeGoogleAuth(
   clientId: string,
@@ -76,11 +112,16 @@ export function initializeGoogleAuth(
           }
           
           const userInfo = await userInfoResponse.json();
-          onSuccessCallback?.({
+          const user: GoogleUser = {
             name: userInfo.name || userInfo.email,
             email: userInfo.email,
             accessToken: accessToken!,
-          });
+          };
+          
+          // Save to localStorage for persistence
+          saveAuth(user, accessToken!);
+          
+          onSuccessCallback?.(user);
         } catch (err: any) {
           console.error('Error fetching user info:', err);
           onErrorCallback?.(err.message || 'Failed to get user info');
@@ -111,7 +152,8 @@ export function signIn(): void {
   }
   
   try {
-    tokenClient.requestAccessToken({ prompt: 'consent' });
+    // Use 'select_account' to allow silent re-authentication if user is already logged in
+    tokenClient.requestAccessToken({ prompt: 'select_account' });
   } catch (error: any) {
     const errorMsg = error?.message || 'Failed to request access token';
     console.error('Sign-in error:', errorMsg, error);
@@ -124,13 +166,63 @@ export function signOut(): void {
   if (accessToken && window.google?.accounts?.oauth2) {
     window.google.accounts.oauth2.revoke(accessToken, () => {
       accessToken = null;
+      clearSavedAuth();
     });
+  } else {
+    clearSavedAuth();
   }
   accessToken = null;
 }
 
 export function getAccessToken(): string | null {
   return accessToken;
+}
+
+// Restore saved session from localStorage
+export async function restoreSession(): Promise<GoogleUser | null> {
+  const saved = loadSavedAuth();
+  if (!saved) {
+    return null;
+  }
+
+  // Verify the token is still valid by making a test API call
+  try {
+    const testResponse = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+      headers: {
+        Authorization: `Bearer ${saved.token}`,
+      },
+    });
+
+    if (testResponse.ok) {
+      // Token is valid, restore the session
+      accessToken = saved.token;
+      return saved.user;
+    } else {
+      // Token is invalid or expired, clear saved auth
+      console.log('Saved token is invalid or expired, clearing saved session');
+      clearSavedAuth();
+      return null;
+    }
+  } catch (error) {
+    console.error('Failed to verify saved session:', error);
+    clearSavedAuth();
+    return null;
+  }
+}
+
+// Check if an error response indicates an expired/invalid token
+function isTokenError(response: Response): boolean {
+  return response.status === 401 || response.status === 403;
+}
+
+// Handle token errors by clearing the session
+function handleTokenError(): void {
+  console.log('Token expired or invalid, clearing session');
+  accessToken = null;
+  clearSavedAuth();
+  if (onErrorCallback) {
+    onErrorCallback('Your session has expired. Please sign in again.');
+  }
 }
 
 // Get or create SnapPlan calendar
@@ -146,6 +238,11 @@ export async function getOrCreateSnapPlanCalendar(): Promise<string> {
       Authorization: `Bearer ${token}`,
     },
   });
+
+  if (isTokenError(listResponse)) {
+    handleTokenError();
+    throw new Error('Authentication expired. Please sign in again.');
+  }
 
   if (listResponse.ok) {
     const calendars = await listResponse.json();
@@ -171,6 +268,11 @@ export async function getOrCreateSnapPlanCalendar(): Promise<string> {
       timeZone: 'America/New_York',
     }),
   });
+
+  if (isTokenError(createResponse)) {
+    handleTokenError();
+    throw new Error('Authentication expired. Please sign in again.');
+  }
 
   if (!createResponse.ok) {
     const error = await createResponse.json().catch(() => ({}));
@@ -228,6 +330,11 @@ export async function createCalendarEvent(event: {
       }),
     });
 
+    if (isTokenError(response)) {
+      handleTokenError();
+      throw new Error('Authentication expired. Please sign in again.');
+    }
+
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
       throw new Error(error.error?.message || `Failed to create event: ${response.statusText}`);
@@ -254,6 +361,11 @@ export async function createCalendarEvent(event: {
       },
     }),
   });
+
+  if (isTokenError(response)) {
+    handleTokenError();
+    throw new Error('Authentication expired. Please sign in again.');
+  }
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
