@@ -1,0 +1,31 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("POSTGRES_URL")
+}
+
+model Event {
+  id              String   @id @default(cuid())
+  title           String
+  description     String?
+  location        String?
+  startISO        String
+  endISO          String
+  timezone        String?
+  allDay          Boolean  @default(false)
+  userId          String?  // For multi-user support
+  googleEventId   String?  // Google Calendar sync status
+  syncedToGoogle  Boolean  @default(false)
+  originalInput   String?  // Original image/text input (base64 for images, text for text)
+  inputType       String?  // "image" or "text"
+  extractedText   String?  // Text extracted from image (if input was image)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  @@index([userId])
+  @@index([createdAt])
+}
+

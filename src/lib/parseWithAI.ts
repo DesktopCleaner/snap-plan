@@ -21,23 +21,22 @@ export type ParseResult = {
   extractedText?: string; // The text extracted from image or input text
 };
 
-// Convert Blob to base64 data URL
+// Convert blob to base64 data URL
 async function blobToBase64(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error);
+    reader.onloadend = () => resolve(reader.result as string);
+    reader.onerror = reject;
     reader.readAsDataURL(blob);
   });
 }
 
 // Extract base64 data from data URL
 function extractBase64(dataUrl: string): string {
-  const commaIndex = dataUrl.indexOf(',');
-  return commaIndex !== -1 ? dataUrl.substring(commaIndex + 1) : dataUrl;
+  return dataUrl.split(',')[1];
 }
 
-// Get MIME type from Blob
+// Get MIME type from blob
 function getMimeType(blob: Blob): string {
   return blob.type || 'image/jpeg';
 }
@@ -74,20 +73,48 @@ export async function parseWithAI(input: string | Blob): Promise<ParseResult> {
     };
   }
 
-  // Get model name - default to gemini-2.0-flash, trim whitespace and quotes
-  const modelRaw = config.geminiModel || 'gemini-2.0-flash';
+  // Get model name from config (which uses GEMINI_MODEL env var), trim whitespace and quotes
+  const modelRaw = config.geminiModel || 'gemini-2.5-flash';
   const model = modelRaw.trim().replace(/^['"]|['"]$/g, '');
   
   const isImage = input instanceof Blob;
   const currentYear = new Date().getFullYear();
   
+  // Prepare image data if input is an image
+  let imageData: string | undefined;
+  let mimeType: string | undefined;
+  let extractedText: string | undefined;
+  
+  if (isImage) {
+    try {
+      // Convert image blob to base64 for Gemini Vision
+      const dataUrl = await blobToBase64(input);
+      imageData = extractBase64(dataUrl);
+      mimeType = getMimeType(input);
+      console.log('Image prepared for Gemini Vision, size:', input.size, 'bytes');
+    } catch (error: any) {
+      console.error('Failed to process image:', error);
+      return {
+        events: fallbackHeuristic('Image input'),
+        method: 'fallback',
+        reason: `Failed to process image: ${error.message}`,
+        extractedText: undefined,
+      };
+    }
+  } else {
+    extractedText = input;
+  }
+  
+  // Use different prompts for image vs text input
   const prompt = isImage 
-    ? `Step 1: Extract ALL raw text from this image (exactly as it appears, preserving formatting).
-Step 2: Analyze the extracted text and parse the calendar event.
+    ? `Analyze this event poster/flyer image and extract the calendar event information.
+
+Step 1: Extract all relevant text from the image (ignore decorative elements, logos, and graphics).
+Step 2: Parse the calendar event from the extracted information.
 
 Return ONLY a JSON object with this EXACT structure (no markdown, no code blocks, no explanation):
 {
-  "rawText": "all text extracted from image",
+  "rawText": "the text extracted from the image",
   "event": {
     "title": "string",
     "description": "string (optional)",
@@ -100,18 +127,6 @@ Return ONLY a JSON object with this EXACT structure (no markdown, no code blocks
     "registrationNeeded": null
   }
 }
-
-FREE FOOD DETECTION:
-- Set "hasFreeFood": true if the text mentions:
-  * "free food", "free food!", "FREE FOOD", "free lunch", "free dinner", "free snacks", etc.
-  * Any variation indicating complimentary food
-- Set "hasFreeFood": false if no mention of free food
-
-REGISTRATION DETECTION:
-- Set "registrationNeeded": true if the text explicitly mentions:
-  * "registration required", "register", "RSVP", "sign up", "registration needed", etc.
-- Set "registrationNeeded": false if the text explicitly says no registration needed
-- Set "registrationNeeded": null if registration is not mentioned at all
 
 CRITICAL: Return ONLY the raw JSON object, no markdown code blocks, no \`\`\`json, no explanation. Start with { and end with }.`
     : `Step 1: Extract the raw text (copy it exactly as provided).
@@ -186,27 +201,21 @@ EXAMPLES:
 
 CRITICAL: Return ONLY the raw JSON object, no markdown code blocks, no \`\`\`json, no explanation. Start with { and end with }.
 
-Text to parse:
-${input}`;
+${!isImage ? `Text to parse:\n${extractedText}` : ''}`;
 
   try {
     // Prepare request body for backend
-    let requestBody: any = {
+    const requestBody: any = {
       model,
       prompt,
     };
     
-    if (isImage) {
-      // Convert image blob to base64
-      const dataUrl = await blobToBase64(input);
-      const base64Data = extractBase64(dataUrl);
-      const mimeType = getMimeType(input);
-      
-      requestBody.imageData = base64Data;
+    // Add image data if input is an image
+    if (isImage && imageData && mimeType) {
+      requestBody.imageData = imageData;
       requestBody.mimeType = mimeType;
     }
     
-    // Call backend API
     console.log(`Calling backend Gemini API proxy, model: "${model}", input type: ${isImage ? 'image' : 'text'}`);
     const resp = await fetch(`${backendUrl}/api/gemini`, {
       method: 'POST',
@@ -259,13 +268,12 @@ ${input}`;
       
       console.error(`Backend Gemini API call failed: ${userFriendlyReason}`);
       
-      const text = typeof input === 'string' ? input : 'Image input';
       return {
-        events: fallbackHeuristic(text),
+        events: fallbackHeuristic(extractedText || (isImage ? 'Image input' : '')),
         method: 'fallback',
         reason: userFriendlyReason,
         model,
-        extractedText: typeof input === 'string' ? input : undefined,
+        extractedText: extractedText,
       };
     }
     
@@ -307,41 +315,37 @@ ${input}`;
           try {
             json = JSON.parse(jsonMatch[0]);
           } catch {
-            const text = typeof input === 'string' ? input : 'Image input';
             return {
-              events: fallbackHeuristic(text),
+              events: fallbackHeuristic(extractedText || (isImage ? 'Image input' : '')),
               method: 'fallback',
               reason: 'Failed to parse JSON response from Gemini. Response: ' + responseText.substring(0, 200),
               model,
-              extractedText: typeof input === 'string' ? input : undefined,
+              extractedText: extractedText,
             };
           }
         } else {
-          const text = typeof input === 'string' ? input : 'Image input';
           return {
-            events: fallbackHeuristic(text),
+            events: fallbackHeuristic(extractedText || (isImage ? 'Image input' : '')),
             method: 'fallback',
             reason: 'No valid JSON found in Gemini response. Response: ' + responseText.substring(0, 200),
             model,
-            extractedText: typeof input === 'string' ? input : undefined,
+            extractedText: extractedText,
           };
         }
       }
     } else {
-      const text = typeof input === 'string' ? input : 'Image input';
       return {
-        events: fallbackHeuristic(text),
+        events: fallbackHeuristic(extractedText || (isImage ? 'Image input' : '')),
         method: 'fallback',
         reason: 'No text response from Gemini API',
         model,
-        extractedText: typeof input === 'string' ? input : undefined,
+        extractedText: extractedText,
       };
     }
 
     // Extract rawText and events from the JSON response
-    // For images, the response should have both rawText and events
-    // For text input, we just use the input text as extractedText
-    const rawText = json?.rawText || (typeof input === 'string' ? input : undefined);
+    // Use the extracted text (either from OCR for images, or direct input for text)
+    const rawText = json?.rawText || extractedText;
     
     // Extract the event from the JSON object
     // Handle case where json has event property, or events array (backward compatibility), or is the event itself
@@ -620,13 +624,12 @@ ${input}`;
     if (parsed.length === 0) {
       console.error('⚠️ No valid event found after parsing');
       console.error('   JSON structure:', json);
-      const text = typeof input === 'string' ? input : 'Image input';
       return {
-        events: fallbackHeuristic(text),
+        events: fallbackHeuristic(extractedText || (isImage ? 'Image input' : '')),
         method: 'fallback',
         reason: 'No valid event found in Gemini response. Check console for details.',
         model,
-        extractedText: rawText || (typeof input === 'string' ? input : undefined),
+        extractedText: extractedText,
       };
     }
     

@@ -22,7 +22,9 @@ export default async function handler(req, res) {
       });
     }
 
-    const { model = 'gemini-2.0-flash', prompt, imageData, mimeType } = req.body;
+    // Get default model from environment variable
+    const defaultModel = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+    const { model = defaultModel, prompt, imageData, mimeType } = req.body;
 
     if (!prompt) {
       return res.status(400).json({ error: 'Prompt is required' });
@@ -66,6 +68,7 @@ export default async function handler(req, res) {
     let resp = null;
     const modelsToTry = [
       model,
+      'gemini-2.5-pro',
       'gemini-2.0-flash',
       'gemini-1.5-flash',
       'gemini-pro',
@@ -94,10 +97,18 @@ export default async function handler(req, res) {
         if (resp.status === 404) {
           console.warn(`Model "${modelToTry}" not found via ${endpointToTry}, trying next...`);
           continue;
-        } else {
-          // If it's not a 404, don't try other models (might be auth error, etc.)
-          console.error(`Non-404 error (${resp.status}) for "${modelToTry}" via ${endpointToTry}, stopping model fallback`);
+        } else if (resp.status === 429) {
+          // Quota error - try other models as they might have different quotas
+          console.warn(`Model "${modelToTry}" quota exceeded (429) via ${endpointToTry}, trying next model...`);
+          continue;
+        } else if (resp.status === 401 || resp.status === 403) {
+          // Auth errors - won't work with other models either, stop trying
+          console.error(`Auth error (${resp.status}) for "${modelToTry}" via ${endpointToTry}, stopping model fallback`);
           break;
+        } else {
+          // Other errors - try next model (might be temporary issue or model-specific)
+          console.warn(`Error ${resp.status} for "${modelToTry}" via ${endpointToTry}, trying next model...`);
+          continue;
         }
       }
       
@@ -108,6 +119,13 @@ export default async function handler(req, res) {
     }
     
     // If all models failed, return error
+    if (!resp) {
+      return res.status(500).json({ 
+        error: 'All Gemini models failed - no response received',
+        details: 'Tried all available models and endpoints but received no response'
+      });
+    }
+    
     let errorDetails = 'Unknown error';
     let errorMessage = '';
     
@@ -120,7 +138,7 @@ export default async function handler(req, res) {
       errorDetails = text || `HTTP ${resp.status} ${resp.statusText}`;
     }
     
-    console.error('Gemini API call failed:', errorDetails);
+    console.error('All Gemini models failed. Last error:', errorDetails);
     return res.status(resp.status).json({ 
       error: `Gemini API error: ${resp.status}`,
       details: errorDetails,

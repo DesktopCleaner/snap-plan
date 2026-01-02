@@ -14,9 +14,12 @@ export default function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
+  // Get default model from environment variable
+  const defaultModel = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+  
   res.json({
     googleClientId: process.env.GOOGLE_CLIENT_ID || '',
-    geminiModel: process.env.GEMINI_MODEL || 'gemini-2.0-flash',
+    geminiModel: process.env.GEMINI_MODEL || defaultModel,
     aiParseMode: process.env.AI_PARSE_MODE || '',
   });
 }

@@ -5,6 +5,9 @@ import { parseWithAI, type ParsedEvent, type ParseResult } from './lib/parseWith
 import { toIcs } from './lib/ics';
 import { initializeGoogleAuth, signIn, signOut, createCalendarEvent, getAccessToken, restoreSession, type GoogleUser } from './lib/googleAuth';
 
+// Import variables
+
+
 // COMMENTED OUT: Component for displaying single extracted text with fold/unfold
 // function SingleTextDisplay({ text }: { text: string }) {
 //   const [isExpanded, setIsExpanded] = useState(false);
@@ -696,7 +699,7 @@ export default function App() {
             {!parsing && parseResult && (
               <div style={{ fontSize: '12px', color: '#666' }}>
                 {parseResult.method === 'gemini' ? (
-                  <span>Using: <strong>Gemini AI</strong> ({parseResult.model || 'gemini-2.0-flash'})</span>
+                  <span>Using: <strong>Gemini AI</strong> ({parseResult.model || 'gemini-2.5-flash'})</span>
                 ) : (
                   <span>Using: <strong>Fallback Heuristic</strong> (Gemini API key not set)</span>
                 )}
