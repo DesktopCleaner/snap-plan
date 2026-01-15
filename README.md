@@ -33,7 +33,6 @@ This application consists of:
 
 - Node.js 18+
 - Google Cloud OAuth 2.0 Client (Web application)
-- Google Gemini API Key
 
 ## Try it out!
 
