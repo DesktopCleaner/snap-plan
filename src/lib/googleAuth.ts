@@ -1,4 +1,5 @@
 // Google OAuth and Calendar API client-side integration
+// Modern OAuth 2.0 Authorization Code + PKCE flow with httpOnly cookies
 
 declare global {
   interface Window {
@@ -12,44 +13,69 @@ export interface GoogleUser {
   accessToken: string;
 }
 
-const STORAGE_KEY = 'snapplan_auth';
-
-let tokenClient: any = null;
-let accessToken: string | null = null;
+let codeClient: any = null;
+let currentUser: GoogleUser | null = null;
 let onSuccessCallback: ((user: GoogleUser) => void) | null = null;
 let onErrorCallback: ((error: string) => void) | null = null;
 
-// Load saved auth from localStorage
-function loadSavedAuth(): { user: GoogleUser; token: string } | null {
+// Get backend URL
+function getBackendUrl(): string {
+  // If VITE_BACKEND_URL is explicitly set, use it
+  if (import.meta.env.VITE_BACKEND_URL) {
+    return import.meta.env.VITE_BACKEND_URL;
+  }
+  
+  // For Vercel dev/prod: use relative URLs (API routes on same origin)
+  // For Vite dev with Express server: use localhost:3001
+  // Check if we're likely running Vercel dev (API routes available on same origin)
+  // or Vite dev (needs separate Express server on 3001)
+  if (import.meta.env.DEV) {
+    // Try to detect if we're in Vercel dev mode
+    // Vercel dev serves API on same origin, so relative URL works
+    // Vite dev needs Express server on 3001
+    // Default to relative URL (works for Vercel), fallback to 3001 if needed
+    return ''; // Use relative URLs for Vercel dev
+  }
+  
+  // Production: use relative URLs
+  return '';
+}
+
+// Get PKCE challenge from backend
+async function getPKCEChallenge(): Promise<{ codeChallenge: string; codeChallengeMethod: string }> {
+  const backendUrl = getBackendUrl();
+  const response = await fetch(`${backendUrl}/api/auth/pkce`, {
+    method: 'GET',
+    credentials: 'include', // Important for cookies
+  });
+  
+  if (!response.ok) {
+    throw new Error('Failed to get PKCE challenge');
+  }
+  
+  return response.json();
+}
+
+// Get access token from backend (reads from httpOnly cookie)
+async function getAccessTokenFromBackend(): Promise<string | null> {
   try {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (parsed.user && parsed.token) {
-        return parsed;
-      }
+    const backendUrl = getBackendUrl();
+    const response = await fetch(`${backendUrl}/api/auth/user`, {
+      method: 'GET',
+      credentials: 'include',
+    });
+    
+    if (response.ok) {
+      // Token is valid, but we need to get it for API calls
+      // Since it's in httpOnly cookie, we'll need to proxy API calls through backend
+      // For now, we'll return a marker that token exists
+      return 'cookie'; // Marker that token exists in cookie
     }
+    
+    return null;
   } catch (error) {
-    console.error('Failed to load saved auth:', error);
-  }
-  return null;
-}
-
-// Save auth to localStorage
-function saveAuth(user: GoogleUser, token: string): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ user, token }));
-  } catch (error) {
-    console.error('Failed to save auth:', error);
-  }
-}
-
-// Clear saved auth from localStorage
-function clearSavedAuth(): void {
-  try {
-    localStorage.removeItem(STORAGE_KEY);
-  } catch (error) {
-    console.error('Failed to clear saved auth:', error);
+    console.error('Failed to get access token from backend:', error);
+    return null;
   }
 }
 
@@ -76,67 +102,105 @@ export function initializeGoogleAuth(
   }
 
   try {
-    // Initialize the token client
-    tokenClient = window.google.accounts.oauth2.initTokenClient({
+    // For popup mode, redirect_uri should be the current page origin
+    // The callback will receive the code and we'll send it to backend
+    const redirectUri = window.location.origin;
+    
+    // Initialize the code client (Authorization Code + PKCE)
+    codeClient = window.google.accounts.oauth2.initCodeClient({
       client_id: clientId,
       scope: 'https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile',
-      callback: async (tokenResponse: any) => {
-        if (tokenResponse.error) {
-          const errorMsg = tokenResponse.error_description || tokenResponse.error || 'Unknown error';
-          console.error('Token response error:', errorMsg);
-          onErrorCallback?.(errorMsg);
+      ux_mode: 'popup',
+      redirect_uri: redirectUri, // Current page origin for popup mode
+      callback: async (response: any) => {
+        if (response.error) {
+          const errorMsg = response.error_description || response.error || 'Unknown error';
+          console.error('Authorization error:', {
+            error: response.error,
+            error_description: response.error_description,
+            redirect_uri: redirectUri,
+            full_response: response
+          });
+          
+          // Provide more helpful error messages
+          if (response.error === 'access_denied') {
+            onErrorCallback?.('Sign-in was cancelled or denied. Please try again and grant the requested permissions.');
+          } else {
+            onErrorCallback?.(errorMsg);
+          }
           return;
         }
         
-        if (!tokenResponse.access_token) {
-          const errorMsg = 'No access token received';
+        if (!response.code) {
+          const errorMsg = 'No authorization code received';
           console.error(errorMsg);
           onErrorCallback?.(errorMsg);
           return;
         }
         
-        accessToken = tokenResponse.access_token;
-        
         try {
-          // Get user info
-          const userInfoResponse = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+          // Exchange authorization code for tokens (via backend)
+          // Pass the redirect_uri to ensure it matches what Google received
+          const backendUrl = getBackendUrl();
+          const tokenResponse = await fetch(`${backendUrl}/api/auth/callback`, {
+            method: 'POST',
+            credentials: 'include', // Important for cookies
             headers: {
-              Authorization: `Bearer ${accessToken}`,
+              'Content-Type': 'application/json',
             },
+            body: JSON.stringify({
+              code: response.code,
+              redirect_uri: redirectUri, // Pass the exact redirect URI used
+            }),
           });
           
-          if (!userInfoResponse.ok) {
-            const errorText = await userInfoResponse.text();
-            console.error('User info response error:', userInfoResponse.status, errorText);
-            throw new Error(`Failed to fetch user info: ${userInfoResponse.status} ${userInfoResponse.statusText}`);
+          if (!tokenResponse.ok) {
+            const errorText = await tokenResponse.text();
+            let error;
+            try {
+              error = JSON.parse(errorText);
+            } catch {
+              error = { error: errorText };
+            }
+            
+            console.error('Token exchange failed:', {
+              status: tokenResponse.status,
+              statusText: tokenResponse.statusText,
+              error: error,
+              redirectUri: redirectUri,
+              backendUrl: backendUrl
+            });
+            
+            const errorMsg = error.error || error.details || error.error_description || 'Failed to exchange authorization code';
+            throw new Error(errorMsg);
           }
           
-          const userInfo = await userInfoResponse.json();
+          const result = await tokenResponse.json();
+          
+          // Get user info (token is now in httpOnly cookie)
           const user: GoogleUser = {
-            name: userInfo.name || userInfo.email,
-            email: userInfo.email,
-            accessToken: accessToken!,
+            name: result.user.name,
+            email: result.user.email,
+            accessToken: 'cookie', // Token is in httpOnly cookie, not accessible to JS
           };
           
-          // Save to localStorage for persistence
-          saveAuth(user, accessToken!);
-          
+          currentUser = user;
           onSuccessCallback?.(user);
         } catch (err: any) {
-          console.error('Error fetching user info:', err);
-          onErrorCallback?.(err.message || 'Failed to get user info');
+          console.error('Error exchanging authorization code:', err);
+          onErrorCallback?.(err.message || 'Failed to complete sign-in');
         }
       },
     });
-    console.log('Google Auth initialized successfully');
+    console.log('Google Auth initialized successfully (Code Client with PKCE)');
   } catch (error: any) {
-    const errorMsg = error?.message || 'Failed to initialize token client';
+    const errorMsg = error?.message || 'Failed to initialize code client';
     console.error('Failed to initialize Google Auth:', errorMsg, error);
     onError(errorMsg);
   }
 }
 
-export function signIn(): void {
+export async function signIn(): Promise<void> {
   if (!window.google?.accounts?.oauth2) {
     const error = 'Google Identity Services not loaded. Please refresh the page.';
     console.error(error);
@@ -144,68 +208,84 @@ export function signIn(): void {
     throw new Error(error);
   }
   
-  if (!tokenClient) {
-    const error = 'Google Auth not initialized. Please check your VITE_GOOGLE_CLIENT_ID environment variable.';
+  if (!codeClient) {
+    const error = 'Google Auth not initialized. Please check your configuration.';
     console.error(error);
     onErrorCallback?.(error);
     throw new Error(error);
   }
   
   try {
-    // Use 'select_account' to allow silent re-authentication if user is already logged in
-    tokenClient.requestAccessToken({ prompt: 'select_account' });
+    // Get PKCE challenge from backend
+    const { codeChallenge, codeChallengeMethod } = await getPKCEChallenge();
+    
+    // Get current origin for redirect URI (for logging)
+    const redirectUri = window.location.origin;
+    console.log('Initiating sign-in with:', {
+      redirect_uri: redirectUri,
+      code_challenge_method: codeChallengeMethod
+    });
+    
+    // Request authorization code with PKCE
+    codeClient.requestCode({
+      code_challenge: codeChallenge,
+      code_challenge_method: codeChallengeMethod,
+    });
   } catch (error: any) {
-    const errorMsg = error?.message || 'Failed to request access token';
+    const errorMsg = error?.message || 'Failed to initiate sign-in';
     console.error('Sign-in error:', errorMsg, error);
     onErrorCallback?.(errorMsg);
     throw error;
   }
 }
 
-export function signOut(): void {
-  if (accessToken && window.google?.accounts?.oauth2) {
-    window.google.accounts.oauth2.revoke(accessToken, () => {
-      accessToken = null;
-      clearSavedAuth();
-    });
-  } else {
-    clearSavedAuth();
-  }
-  accessToken = null;
-}
-
-export function getAccessToken(): string | null {
-  return accessToken;
-}
-
-// Restore saved session from localStorage
-export async function restoreSession(): Promise<GoogleUser | null> {
-  const saved = loadSavedAuth();
-  if (!saved) {
-    return null;
-  }
-
-  // Verify the token is still valid by making a test API call
+export async function signOut(): Promise<void> {
   try {
-    const testResponse = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
-      headers: {
-        Authorization: `Bearer ${saved.token}`,
-      },
+    const backendUrl = getBackendUrl();
+    await fetch(`${backendUrl}/api/auth/signout`, {
+      method: 'POST',
+      credentials: 'include',
     });
+  } catch (error) {
+    console.error('Sign out error:', error);
+  } finally {
+    currentUser = null;
+  }
+}
 
-    if (testResponse.ok) {
-      // Token is valid, restore the session
-      accessToken = saved.token;
-      return saved.user;
+export async function getAccessToken(): Promise<string | null> {
+  // Token is in httpOnly cookie, so we return a marker
+  // For direct Google API calls, we'll need to proxy through backend
+  const token = await getAccessTokenFromBackend();
+  return token;
+}
+
+// Restore saved session from backend (checks httpOnly cookie)
+export async function restoreSession(): Promise<GoogleUser | null> {
+  try {
+    const backendUrl = getBackendUrl();
+    const response = await fetch(`${backendUrl}/api/auth/user`, {
+      method: 'GET',
+      credentials: 'include',
+    });
+    
+    if (response.ok) {
+      const result = await response.json();
+      const user: GoogleUser = {
+        name: result.user.name,
+        email: result.user.email,
+        accessToken: 'cookie', // Token is in httpOnly cookie
+      };
+      currentUser = user;
+      return user;
     } else {
-      // Token is invalid or expired, clear saved auth
-      console.log('Saved token is invalid or expired, clearing saved session');
-      clearSavedAuth();
+      // Not authenticated
+      currentUser = null;
       return null;
     }
   } catch (error) {
-    console.error('Failed to verify saved session:', error);
-    clearSavedAuth();
+    console.error('Failed to restore session:', error);
+    currentUser = null;
     return null;
   }
 }
@@ -216,31 +296,43 @@ function isTokenError(response: Response): boolean {
 }
 
 // Handle token errors by clearing the session
-function handleTokenError(): void {
+async function handleTokenError(): Promise<void> {
   console.log('Token expired or invalid, clearing session');
-  accessToken = null;
-  clearSavedAuth();
+  currentUser = null;
+  await signOut();
   if (onErrorCallback) {
     onErrorCallback('Your session has expired. Please sign in again.');
   }
 }
 
+// Proxy Google Calendar API call through backend
+async function proxyGoogleAPI(url: string, options: RequestInit = {}): Promise<Response> {
+  const backendUrl = getBackendUrl();
+  return fetch(`${backendUrl}/api/google-proxy`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      url,
+      method: options.method || 'GET',
+      headers: options.headers || {},
+      body: options.body,
+    }),
+  });
+}
+
 // Get or create SnapPlan calendar
 export async function getOrCreateSnapPlanCalendar(): Promise<string> {
-  const token = getAccessToken();
-  if (!token) {
-    throw new Error('Not authenticated');
-  }
-
-  // First, try to find existing SnapPlan calendar
-  const listResponse = await fetch('https://www.googleapis.com/calendar/v3/users/me/calendarList', {
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
-  });
+  // Proxy through backend since token is in httpOnly cookie
+  const listResponse = await proxyGoogleAPI(
+    'https://www.googleapis.com/calendar/v3/users/me/calendarList',
+    { method: 'GET' }
+  );
 
   if (isTokenError(listResponse)) {
-    handleTokenError();
+    await handleTokenError();
     throw new Error('Authentication expired. Please sign in again.');
   }
 
@@ -256,21 +348,23 @@ export async function getOrCreateSnapPlanCalendar(): Promise<string> {
   }
 
   // If not found, create a new SnapPlan calendar
-  const createResponse = await fetch('https://www.googleapis.com/calendar/v3/calendars', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      summary: 'SnapPlan',
-      description: 'Events created by SnapPlan',
-      timeZone: 'America/New_York',
-    }),
-  });
+  const createResponse = await proxyGoogleAPI(
+    'https://www.googleapis.com/calendar/v3/calendars',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        summary: 'SnapPlan',
+        description: 'Events created by SnapPlan',
+        timeZone: 'America/New_York',
+      }),
+    }
+  );
 
   if (isTokenError(createResponse)) {
-    handleTokenError();
+    await handleTokenError();
     throw new Error('Authentication expired. Please sign in again.');
   }
 
@@ -291,11 +385,6 @@ export async function createCalendarEvent(event: {
   endISO: string;
   allDay?: boolean;
 }): Promise<void> {
-  const token = getAccessToken();
-  if (!token) {
-    throw new Error('Not authenticated');
-  }
-
   // Get or create SnapPlan calendar
   const calendarId = await getOrCreateSnapPlanCalendar();
 
@@ -311,27 +400,29 @@ export async function createCalendarEvent(event: {
     endDateObj.setDate(endDateObj.getDate() + 1);
     const endDateStr = `${endDateObj.getFullYear()}-${String(endDateObj.getMonth() + 1).padStart(2, '0')}-${String(endDateObj.getDate()).padStart(2, '0')}`;
     
-    const response = await fetch(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        summary: event.title,
-        description: event.description,
-        location: event.location,
-        start: {
-          date: startDateStr,
+    const response = await proxyGoogleAPI(
+      `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
         },
-        end: {
-          date: endDateStr,
-        },
-      }),
-    });
+        body: JSON.stringify({
+          summary: event.title,
+          description: event.description,
+          location: event.location,
+          start: {
+            date: startDateStr,
+          },
+          end: {
+            date: endDateStr,
+          },
+        }),
+      }
+    );
 
     if (isTokenError(response)) {
-      handleTokenError();
+      await handleTokenError();
       throw new Error('Authentication expired. Please sign in again.');
     }
 
@@ -343,27 +434,29 @@ export async function createCalendarEvent(event: {
   }
 
   // For timed events, use dateTime format
-  const response = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      summary: event.title,
-      description: event.description,
-      location: event.location,
-      start: {
-        dateTime: event.startISO,
+  const response = await proxyGoogleAPI(
+    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
       },
-      end: {
-        dateTime: event.endISO,
-      },
-    }),
-  });
+      body: JSON.stringify({
+        summary: event.title,
+        description: event.description,
+        location: event.location,
+        start: {
+          dateTime: event.startISO,
+        },
+        end: {
+          dateTime: event.endISO,
+        },
+      }),
+    }
+  );
 
   if (isTokenError(response)) {
-    handleTokenError();
+    await handleTokenError();
     throw new Error('Authentication expired. Please sign in again.');
   }
 
@@ -372,4 +465,3 @@ export async function createCalendarEvent(event: {
     throw new Error(error.error?.message || `Failed to create event: ${response.statusText}`);
   }
 }
-

@@ -43,8 +43,10 @@ function getMimeType(blob: Blob): string {
 
 export async function parseWithAI(input: string | Blob): Promise<ParseResult> {
   // Fetch config from backend
-  // Use relative URL for Vercel deployment, fallback to localhost for dev
-  const backendUrl = import.meta.env.VITE_BACKEND_URL || (import.meta.env.DEV ? 'http://localhost:3001' : '');
+  // If VITE_BACKEND_URL is explicitly set, use it
+  // Otherwise, use relative URLs (works for Vercel dev/prod)
+  // For Vite dev with Express, set VITE_BACKEND_URL=http://localhost:3001
+  const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
   let config;
   try {
     const configResponse = await fetch(`${backendUrl}/api/config`);
@@ -193,11 +195,63 @@ YEAR RULES (CRITICAL):
 DESCRIPTION RULES:
 - The description should contain the complete text extracted from the image or input.
 - Do not summarize or filter - include everything from rawText in the description.
+- Add descriptive tags at the beginning: #Free Food (if hasFreeFood is true), #Registration Needed (if registrationNeeded is true), #No Registration Needed (if registrationNeeded is false).
 
-EXAMPLES:
-- "September 17th CC 6pm - 9pm" → allDay: false, startISO: "${currentYear}-09-17T18:00:00Z", endISO: "${currentYear}-09-17T21:00:00Z"
-- "September 17th - All Day Event" → allDay: true, startISO: "${currentYear}-09-17T00:00:00Z", endISO: "${currentYear}-09-17T23:59:59Z"
-- "September 17th" (no time) → allDay: true, startISO: "${currentYear}-09-17T00:00:00Z", endISO: "${currentYear}-09-17T23:59:59Z"
+FEW-SHOT EXAMPLES:
+
+Example 1:
+Input text: "WEALTH MANAGEMENT ASSOCIATION @uw.wealthmanagement Stock Pitch Competition Free Entry Food, $500 Prize Pool, and Networking NOVEMBER 29, 2025 10:30AM-4PM LOCATION: AL 113 Sign Up - Link in Bio Open to all Canadian Undergraduate Students"
+Expected output:
+{
+  "rawText": "WEALTH MANAGEMENT ASSOCIATION @uw.wealthmanagement Stock Pitch Competition Free Entry Food, $500 Prize Pool, and Networking NOVEMBER 29, 2025 10:30AM-4PM LOCATION: AL 113 Sign Up - Link in Bio Open to all Canadian Undergraduate Students",
+  "event": {
+    "title": "Stock Pitch Competition",
+    "description": "#Free Food #Registration Needed\n\nWEALTH MANAGEMENT ASSOCIATION @uw.wealthmanagement Stock Pitch Competition Free Entry Food, $500 Prize Pool, and Networking NOVEMBER 29, 2025 10:30AM-4PM LOCATION: AL 113 Sign Up - Link in Bio Open to all Canadian Undergraduate Students",
+    "location": "AL 113",
+    "startISO": "2025-11-29T15:30:00Z",
+    "endISO": "2025-11-29T21:00:00Z",
+    "timezone": "America/New_York",
+    "allDay": false,
+    "hasFreeFood": true,
+    "registrationNeeded": true
+  }
+}
+
+Example 2:
+Input text: "We're hiring! Join CSC's Winter 2026 team Applications Due Nov 25"
+Expected output:
+{
+  "rawText": "We're hiring! Join CSC's Winter 2026 team Applications Due Nov 25",
+  "event": {
+    "title": "CSC Winter 2026 Team Applications Due",
+    "description": "#Registration Needed\n\nWe're hiring! Join CSC's Winter 2026 team Applications Due Nov 25",
+    "location": null,
+    "startISO": "${currentYear}-11-25T00:00:00Z",
+    "endISO": "${currentYear}-11-25T23:59:59Z",
+    "timezone": "America/New_York",
+    "allDay": true,
+    "hasFreeFood": false,
+    "registrationNeeded": true
+  }
+}
+
+Example 3:
+Input text: "Attend the Co-op Connection Board Game Mixer\nPosted Nov 24, 2025 10:00 AM\nSecured a co-op position and now feeling \"what comes next\"?\n\nCome meet other co-op students moving to the same area as you at the Co-op Connection pre-work term Board Game Café Mixer on Monday, December 1st, 2025, from 5 - 6:30 p.m. in the Tatham Centre (TC). Grab a board game and enjoy some snacks with others who may be your future roommates, coworkers, or friends next term!\n\nVolunteer opportunity for Winter 2026: Do you love bringing people together and making them feel at home? Are you on a work term for Winter 2026? Become a Co-op Connection Regional Ambassador and help us create awesome social experiences for co-op students in your area! Submit an application through this form here!\n\nLet us know you are coming by submitting your registration form. Join us for a chill night of board games. We hope to see you there!"
+Expected output:
+{
+  "rawText": "Attend the Co-op Connection Board Game Mixer\nPosted Nov 24, 2025 10:00 AM\nSecured a co-op position and now feeling \"what comes next\"?\n\nCome meet other co-op students moving to the same area as you at the Co-op Connection pre-work term Board Game Café Mixer on Monday, December 1st, 2025, from 5 - 6:30 p.m. in the Tatham Centre (TC). Grab a board game and enjoy some snacks with others who may be your future roommates, coworkers, or friends next term!\n\nVolunteer opportunity for Winter 2026: Do you love bringing people together and making them feel at home? Are you on a work term for Winter 2026? Become a Co-op Connection Regional Ambassador and help us create awesome social experiences for co-op students in your area! Submit an application through this form here!\n\nLet us know you are coming by submitting your registration form. Join us for a chill night of board games. We hope to see you there!",
+  "event": {
+    "title": "Co-op Connection Board Game Mixer",
+    "description": "#Free Food #Registration Needed\n\nAttend the Co-op Connection Board Game Mixer\nPosted Nov 24, 2025 10:00 AM\nSecured a co-op position and now feeling \"what comes next\"?\n\nCome meet other co-op students moving to the same area as you at the Co-op Connection pre-work term Board Game Café Mixer on Monday, December 1st, 2025, from 5 - 6:30 p.m. in the Tatham Centre (TC). Grab a board game and enjoy some snacks with others who may be your future roommates, coworkers, or friends next term!\n\nVolunteer opportunity for Winter 2026: Do you love bringing people together and making them feel at home? Are you on a work term for Winter 2026? Become a Co-op Connection Regional Ambassador and help us create awesome social experiences for co-op students in your area! Submit an application through this form here!\n\nLet us know you are coming by submitting your registration form. Join us for a chill night of board games. We hope to see you there!",
+    "location": "Tatham Centre (TC)",
+    "startISO": "2025-12-01T22:00:00Z",
+    "endISO": "2025-12-01T23:30:00Z",
+    "timezone": "America/New_York",
+    "allDay": false,
+    "hasFreeFood": true,
+    "registrationNeeded": true
+  }
+}
 
 CRITICAL: Return ONLY the raw JSON object, no markdown code blocks, no \`\`\`json, no explanation. Start with { and end with }.
 

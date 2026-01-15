@@ -9,9 +9,13 @@ type Props = {
   isOpen: boolean;
   onClose: () => void;
   onSave: (event: ParsedEvent) => void;
+  imagePreview?: string | null;
+  originalInput?: string | Blob | null;
+  onRetry?: () => Promise<void>;
+  isRetrying?: boolean;
 };
 
-export default function EventEditModal({ event, index, total, isOpen, onClose, onSave }: Props) {
+export default function EventEditModal({ event, index, total, isOpen, onClose, onSave, imagePreview, originalInput, onRetry, isRetrying }: Props) {
   const [editedEvent, setEditedEvent] = useState<ParsedEvent>({
     ...event,
     description: event.description || '',
@@ -132,7 +136,7 @@ export default function EventEditModal({ event, index, total, isOpen, onClose, o
           backgroundColor: 'white',
           borderRadius: '8px',
           padding: '24px',
-          maxWidth: '600px',
+          maxWidth: imagePreview ? '1200px' : '700px',
           width: '100%',
           maxHeight: '90vh',
           overflowY: 'auto',
@@ -159,7 +163,49 @@ export default function EventEditModal({ event, index, total, isOpen, onClose, o
           </button>
         </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+        <div style={{ display: 'flex', gap: '24px', alignItems: 'flex-start' }}>
+                 {/* Image Preview */}
+                 {imagePreview && (
+            <div style={{ 
+              flex: '0 0 400px', 
+              display: 'flex', 
+              flexDirection: 'column',
+              gap: '12px'
+            }}>
+              <div style={{ 
+                fontWeight: 'bold', 
+                fontSize: '14px',
+                color: '#666',
+                marginBottom: '4px'
+              }}>
+                Original Image
+              </div>
+              <div style={{
+                border: '1px solid #ddd',
+                borderRadius: '8px',
+                padding: '12px',
+                backgroundColor: '#f9f9f9',
+                position: 'sticky',
+                top: '20px',
+                maxHeight: 'calc(90vh - 100px)',
+                overflow: 'auto'
+              }}>
+                       <img
+                         src={imagePreview}
+                         alt="Original event poster/flyer"
+                         style={{
+                           width: '100%',
+                           height: 'auto',
+                           borderRadius: '4px',
+                           display: 'block',
+                         }}
+                       />
+              </div>
+            </div>
+          )}
+
+          {/* Form Fields */}
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '16px', minWidth: 0 }}>
           {/* Title */}
           <div>
             <label style={{ display: 'block', marginBottom: '4px', fontWeight: 'bold' }}>
@@ -338,10 +384,30 @@ export default function EventEditModal({ event, index, total, isOpen, onClose, o
               </div>
             </div>
           )}
+          </div>
         </div>
 
         {/* Action Buttons */}
         <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end', marginTop: '24px' }}>
+          {onRetry && originalInput && (
+            <button
+              onClick={onRetry}
+              disabled={isRetrying}
+              style={{
+                padding: '10px 20px',
+                border: '1px solid #ddd',
+                borderRadius: '4px',
+                backgroundColor: '#f0f0f0',
+                color: '#333',
+                cursor: isRetrying ? 'not-allowed' : 'pointer',
+                opacity: isRetrying ? 0.6 : 1,
+                fontSize: '14px',
+                fontWeight: 'bold',
+              }}
+            >
+              {isRetrying ? 'Retrying...' : 'Retry Analysis'}
+            </button>
+          )}
           <button
             onClick={handleCancel}
             style={{
@@ -357,15 +423,15 @@ export default function EventEditModal({ event, index, total, isOpen, onClose, o
           </button>
           <button
             onClick={handleSave}
-            disabled={!editedEvent.title.trim() || !startDate || !startTime || !endDate || !endTime}
+            disabled={!editedEvent.title.trim() || !startDate || !endDate || (!allDay && (!startTime || !endTime))}
             style={{
               padding: '10px 20px',
               border: 'none',
               borderRadius: '4px',
               backgroundColor: '#4285f4',
               color: 'white',
-              cursor: (!editedEvent.title.trim() || !startDate || !startTime || !endDate || !endTime) ? 'not-allowed' : 'pointer',
-              opacity: (!editedEvent.title.trim() || !startDate || !startTime || !endDate || !endTime) ? 0.6 : 1,
+              cursor: (!editedEvent.title.trim() || !startDate || !endDate || (!allDay && (!startTime || !endTime))) ? 'not-allowed' : 'pointer',
+              opacity: (!editedEvent.title.trim() || !startDate || !endDate || (!allDay && (!startTime || !endTime))) ? 0.6 : 1,
               fontSize: '14px',
               fontWeight: 'bold',
             }}

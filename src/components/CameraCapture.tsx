@@ -250,15 +250,22 @@ export default function CameraCapture({ onCapture }: Props) {
   };
 
   return (
-    <div>
-      <div style={{ position: 'relative', width: '100%', background: '#000', borderRadius: '4px', overflow: 'hidden', minHeight: '200px' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+      <div style={{ 
+        position: 'relative', 
+        width: '60%', 
+        maxWidth: '500px',
+        background: '#000', 
+        borderRadius: '4px', 
+        overflow: 'hidden', 
+        minHeight: '200px',
+        aspectRatio: '4/3'
+      }}>
         <video 
           ref={videoRef} 
           style={{ 
             width: '100%', 
-            height: 'auto',
-            minHeight: '200px',
-            maxHeight: '500px',
+            height: '100%',
             display: cameraActive ? 'block' : 'none',
             objectFit: 'contain',
             backgroundColor: '#000',
@@ -331,7 +338,7 @@ export default function CameraCapture({ onCapture }: Props) {
         )}
       </div>
       <canvas ref={canvasRef} style={{ display: 'none' }} />
-      <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+      <div style={{ marginTop: 16, display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
         <button onClick={handleCapture} disabled={!ready || !cameraActive}>
           {ready && cameraActive ? 'Capture Photo' : isStarting ? 'Starting camera…' : 'Camera Off'}
         </button>
@@ -353,7 +360,7 @@ export default function CameraCapture({ onCapture }: Props) {
           {cameraActive ? 'Turn Camera Off' : 'Turn Camera On'}
         </button>
       </div>
-      {error && <div style={{ color: 'crimson', marginTop: 8 }}>{error}</div>}
+      {error && <div style={{ color: 'crimson', marginTop: 8, textAlign: 'center' }}>{error}</div>}
     </div>
   );
 }

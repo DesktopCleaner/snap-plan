@@ -76,11 +76,25 @@ export default function App() {
   const [editingEventIndex, setEditingEventIndex] = useState<number | null>(null);
   const [bulkUploading, setBulkUploading] = useState(false);
   const [bulkProgress, setBulkProgress] = useState<{ current: number; total: number } | null>(null);
+  const [showSignInPopup, setShowSignInPopup] = useState(false);
+  const [bulkFiles, setBulkFiles] = useState<File[] | null>(null); // Store original bulk upload files
+  const [eventToFileMap, setEventToFileMap] = useState<Map<number, File>>(new Map()); // Map event index to source file
+  const [fileToEventIndices, setFileToEventIndices] = useState<Map<File, number[]>>(new Map()); // Map file to array of event indices
+  const [bulkPreviewUrls, setBulkPreviewUrls] = useState<Map<File, string>>(new Map()); // Store blob URLs for bulk upload previews
   // COMMENTED OUT: Raw text display state
   // const [bulkExtractedTexts, setBulkExtractedTexts] = useState<Array<{ fileName: string; text: string }>>([]);
   //   const [expandedTexts, setExpandedTexts] = useState<Set<number>>(new Set());
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const autoParseTriggeredRef = useRef<string | null>(null);
+
+  // Show sign-in popup when auth is ready and user is not signed in
+  useEffect(() => {
+    if (authReady && !user) {
+      setShowSignInPopup(true);
+    } else if (user) {
+      setShowSignInPopup(false);
+    }
+  }, [authReady, user]);
 
   // Effect to fetch config from backend and initialize Google Auth
   useEffect(() => {
@@ -98,8 +112,9 @@ export default function App() {
           console.log('No saved session found or session expired');
         }
 
-        // Use relative URL for Vercel deployment, fallback to localhost for dev
-        const backendUrl = import.meta.env.VITE_BACKEND_URL || (import.meta.env.DEV ? 'http://localhost:3001' : '');
+        // Use relative URL for Vercel deployment/dev
+        // For Vite dev with Express server, set VITE_BACKEND_URL=http://localhost:3001
+        const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
         const response = await fetch(`${backendUrl}/api/config`);
         
         if (!response.ok) {
@@ -197,6 +212,14 @@ export default function App() {
     };
   }, [imagePreview]);
 
+  // Cleanup bulk preview URLs when events are cleared
+  useEffect(() => {
+    if (!events && bulkPreviewUrls.size > 0) {
+      bulkPreviewUrls.forEach(url => URL.revokeObjectURL(url));
+      setBulkPreviewUrls(new Map());
+    }
+  }, [events, bulkPreviewUrls]);
+
   // Automatically analyze image when uploaded/captured (but not for bulk upload)
   useEffect(() => {
     if (selectedImage && (inputMethod === 'camera' || inputMethod === 'upload') && !bulkUploading && !parsing && !events) {
@@ -255,9 +278,14 @@ export default function App() {
     setIcs(null);
     setEditingEventIndex(null);
     
+    // Store bulk files for retry functionality
+    setBulkFiles(files);
+    
     const allEvents: ParsedEvent[] = [];
     const allParseResults: ParseResult[] = [];
     const extractedTextsByImage: Array<{ fileName: string; text: string }> = [];
+    const newEventToFileMap = new Map<number, File>(); // Track which event came from which file
+    const newFileToEventIndices = new Map<File, number[]>(); // Track which events belong to which file
     
     try {
       // Process each file one by one
@@ -279,7 +307,17 @@ export default function App() {
           }
           
           if (result.events && result.events.length > 0) {
+            // Track which events came from this file
+            const startIndex = allEvents.length;
+            const eventIndices: number[] = [];
             allEvents.push(...result.events);
+            // Map all events from this file to the file
+            for (let j = 0; j < result.events.length; j++) {
+              const eventIndex = startIndex + j;
+              newEventToFileMap.set(eventIndex, file);
+              eventIndices.push(eventIndex);
+            }
+            newFileToEventIndices.set(file, eventIndices);
             console.log(`✓ Found ${result.events.length} event(s) in ${file.name}`);
           } else {
             console.log(`⚠ No events found in ${file.name}`);
@@ -289,6 +327,10 @@ export default function App() {
           // Continue with next file even if one fails
         }
       }
+      
+      // Store the mappings
+      setEventToFileMap(newEventToFileMap);
+      setFileToEventIndices(newFileToEventIndices);
       
       // COMMENTED OUT: Store extracted texts for display
       // setBulkExtractedTexts(extractedTextsByImage);
@@ -420,7 +462,8 @@ export default function App() {
 
   const createEvents = async () => {
     if (!events || events.length === 0) return;
-    if (!getAccessToken()) {
+    const token = await getAccessToken();
+    if (!token) {
       alert('Please sign in first');
       return;
     }
@@ -462,7 +505,7 @@ export default function App() {
           {user ? (
             <>
               <span style={{ marginRight: 12 }}>Hi, {user.name || user.email}</span>
-              <button onClick={() => { signOut(); setUser(null); }}>
+              <button onClick={async () => { await signOut(); setUser(null); }}>
                 Sign out
               </button>
             </>
@@ -910,7 +953,266 @@ export default function App() {
           isOpen={editingEventIndex !== null}
           onClose={() => setEditingEventIndex(null)}
           onSave={handleEventSave}
+          imagePreview={(() => {
+            // For bulk uploads, create or reuse preview URL from the specific file
+            if (bulkFiles && eventToFileMap.has(editingEventIndex)) {
+              const sourceFile = eventToFileMap.get(editingEventIndex);
+              if (sourceFile) {
+                // Check if we already have a URL for this file
+                if (bulkPreviewUrls.has(sourceFile)) {
+                  return bulkPreviewUrls.get(sourceFile)!;
+                }
+                // Create new URL and store it
+                const url = URL.createObjectURL(sourceFile);
+                setBulkPreviewUrls(prev => new Map(prev).set(sourceFile, url));
+                return url;
+              }
+            }
+            // For single upload/camera, use the existing preview
+            return imagePreview;
+          })()}
+          originalInput={(() => {
+            // For bulk uploads, return the specific file
+            if (bulkFiles && eventToFileMap.has(editingEventIndex)) {
+              return eventToFileMap.get(editingEventIndex) || null;
+            }
+            // For single upload/camera/text, use existing input
+            return inputMethod === 'text' ? inputText : selectedImage;
+          })()}
+          onRetry={async () => {
+            // Check if this is a bulk upload scenario
+            const sourceFile = eventToFileMap.get(editingEventIndex);
+            
+            if (bulkFiles && sourceFile) {
+              // Bulk upload retry: retry only the specific file
+              setParsing(true);
+              
+              try {
+                console.log(`Retrying analysis for file: ${sourceFile.name}`);
+                const result = await parseWithAI(sourceFile);
+                
+                // Get the event indices for this file
+                const fileEventIndices = fileToEventIndices.get(sourceFile) || [];
+                
+                if (fileEventIndices.length === 0) {
+                  alert(`No events found for ${sourceFile.name} in current data.`);
+                  setParsing(false);
+                  return;
+                }
+                
+                // Create new events array, replacing only events from this file
+                const newEvents = [...events];
+                const newEventToFileMap = new Map<number, File>();
+                const newFileToEventIndices = new Map<File, number[]>();
+                
+                // Find the insertion point (first index where events from this file start)
+                const insertIndex = Math.min(...fileEventIndices);
+                const numOldEvents = fileEventIndices.length;
+                
+                // Remove old events from this file (in reverse order to maintain indices)
+                fileEventIndices.sort((a, b) => b - a); // Sort descending
+                for (const idx of fileEventIndices) {
+                  newEvents.splice(idx, 1);
+                }
+                
+                // Insert new events at the insertion point
+                newEvents.splice(insertIndex, 0, ...(result.events || []));
+                
+                // Rebuild mappings for all files
+                bulkFiles.forEach(file => {
+                  if (file === sourceFile) {
+                    // Update mapping for the retried file
+                    const newIndices: number[] = [];
+                    for (let i = 0; i < (result.events?.length || 0); i++) {
+                      const eventIndex = insertIndex + i;
+                      newEventToFileMap.set(eventIndex, file);
+                      newIndices.push(eventIndex);
+                    }
+                    newFileToEventIndices.set(file, newIndices);
+                  } else {
+                    // Update mappings for other files (adjust indices)
+                    const oldIndices = fileToEventIndices.get(file) || [];
+                    const newIndices: number[] = [];
+                    oldIndices.forEach(oldIdx => {
+                      let newIdx = oldIdx;
+                      // If the old index is after the removed events, adjust it
+                      if (oldIdx > insertIndex) {
+                        newIdx = oldIdx - numOldEvents + (result.events?.length || 0);
+                      }
+                      newEventToFileMap.set(newIdx, file);
+                      newIndices.push(newIdx);
+                    });
+                    newFileToEventIndices.set(file, newIndices);
+                  }
+                });
+                
+                setEvents(newEvents);
+                setEventToFileMap(newEventToFileMap);
+                setFileToEventIndices(newFileToEventIndices);
+                
+                // Update parse result
+                setParseResult(prev => prev ? {
+                  ...prev,
+                  events: newEvents,
+                } : null);
+                
+                // Regenerate ICS
+                try {
+                  const icsContent = toIcs(newEvents);
+                  setIcs(icsContent);
+                } catch (err) {
+                  console.error('ICS generation failed:', err);
+                }
+                
+                // Keep the modal open on the first new event from this file
+                if (result.events && result.events.length > 0) {
+                  setEditingEventIndex(insertIndex);
+                  // Success - no alert needed
+                } else {
+                  // Close modal if no events found
+                  setEditingEventIndex(null);
+                  alert(`Re-analysis of ${sourceFile.name} found no events. Other events remain unchanged.`);
+                }
+              } catch (error: any) {
+                alert('Retry failed: ' + (error?.message || 'Unknown error'));
+              } finally {
+                setParsing(false);
+              }
+            } else {
+              // Single file/text retry: original behavior
+              if (inputMethod === 'text' && !inputText.trim()) {
+                alert('Please enter some text to parse');
+                return;
+              }
+              if ((inputMethod === 'camera' || inputMethod === 'upload') && !selectedImage) {
+                alert('Please capture or upload an image');
+                return;
+              }
+
+              setParsing(true);
+              setParseResult(null);
+              setEvents(null);
+              setIcs(null);
+              setEditingEventIndex(null);
+              
+              try {
+                const input = inputMethod === 'text' ? inputText : selectedImage!;
+                const result = await parseWithAI(input);
+                setParseResult(result);
+                setEvents(result.events);
+                
+                if (result.events.length > 0) {
+                  setEditingEventIndex(0);
+                }
+                
+                try {
+                  const icsContent = toIcs(result.events);
+                  setIcs(icsContent);
+                } catch (err) {
+                  console.error('ICS generation failed:', err);
+                  setIcs(null);
+                }
+              } catch (error: any) {
+                alert('Parsing failed: ' + (error?.message || 'Unknown error'));
+              } finally {
+                setParsing(false);
+              }
+            }
+          }}
+          isRetrying={parsing}
         />
+      )}
+
+      {/* Sign-in Popup Modal */}
+      {showSignInPopup && authReady && !user && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 2000,
+            padding: '20px',
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowSignInPopup(false);
+            }
+          }}
+        >
+          <div
+            style={{
+              backgroundColor: 'white',
+              borderRadius: '8px',
+              padding: '32px',
+              maxWidth: '400px',
+              width: '100%',
+              boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)',
+              textAlign: 'center',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 style={{ margin: '0 0 16px 0', fontSize: '24px' }}>Welcome to SnapPlan</h2>
+            <p style={{ margin: '0 0 24px 0', color: '#666', fontSize: '16px', lineHeight: '1.5' }}>
+              Sign in with Google to start creating events from images and text.
+            </p>
+            <button
+              onClick={() => {
+                setSigningIn(true);
+                setAuthError(null);
+                try {
+                  signIn();
+                } catch (error: any) {
+                  setSigningIn(false);
+                  const errorMsg = error?.message || 'Failed to initiate sign-in';
+                  setAuthError(errorMsg);
+                  alert('Sign-in error: ' + errorMsg);
+                }
+              }}
+              disabled={!authReady || signingIn}
+              style={{
+                padding: '12px 24px',
+                border: 'none',
+                borderRadius: '4px',
+                backgroundColor: '#4285f4',
+                color: 'white',
+                cursor: (!authReady || signingIn) ? 'not-allowed' : 'pointer',
+                opacity: (!authReady || signingIn) ? 0.6 : 1,
+                fontSize: '16px',
+                fontWeight: 'bold',
+                width: '100%',
+              }}
+            >
+              {signingIn ? 'Signing in...' : 'Sign in with Google'}
+            </button>
+            {authError && (
+              <div style={{ marginTop: '16px', padding: '12px', background: '#ffe6e6', border: '1px solid #ff9999', borderRadius: '4px', fontSize: '14px' }}>
+                <div style={{ color: 'red', fontWeight: 'bold', marginBottom: '4px' }}>Error:</div>
+                <div style={{ color: '#cc0000' }}>{authError}</div>
+              </div>
+            )}
+            <button
+              onClick={() => setShowSignInPopup(false)}
+              style={{
+                marginTop: '16px',
+                padding: '8px 16px',
+                border: '1px solid #ddd',
+                borderRadius: '4px',
+                backgroundColor: 'white',
+                cursor: 'pointer',
+                fontSize: '14px',
+                color: '#666',
+              }}
+            >
+              Continue without signing in
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );
