@@ -14,7 +14,6 @@ export interface GoogleUser {
 }
 
 let codeClient: any = null;
-let currentUser: GoogleUser | null = null;
 let onSuccessCallback: ((user: GoogleUser) => void) | null = null;
 let onErrorCallback: ((error: string) => void) | null = null;
 
@@ -184,7 +183,6 @@ export function initializeGoogleAuth(
             accessToken: 'cookie', // Token is in httpOnly cookie, not accessible to JS
           };
           
-          currentUser = user;
           onSuccessCallback?.(user);
         } catch (err: any) {
           console.error('Error exchanging authorization code:', err);
@@ -249,7 +247,7 @@ export async function signOut(): Promise<void> {
   } catch (error) {
     console.error('Sign out error:', error);
   } finally {
-    currentUser = null;
+    // Cleanup handled by callbacks
   }
 }
 
@@ -276,16 +274,13 @@ export async function restoreSession(): Promise<GoogleUser | null> {
         email: result.user.email,
         accessToken: 'cookie', // Token is in httpOnly cookie
       };
-      currentUser = user;
       return user;
     } else {
       // Not authenticated
-      currentUser = null;
       return null;
     }
   } catch (error) {
     console.error('Failed to restore session:', error);
-    currentUser = null;
     return null;
   }
 }
@@ -298,7 +293,6 @@ function isTokenError(response: Response): boolean {
 // Handle token errors by clearing the session
 async function handleTokenError(): Promise<void> {
   console.log('Token expired or invalid, clearing session');
-  currentUser = null;
   await signOut();
   if (onErrorCallback) {
     onErrorCallback('Your session has expired. Please sign in again.');
