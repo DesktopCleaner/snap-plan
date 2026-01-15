@@ -5,6 +5,8 @@ import cookieParser from 'cookie-parser';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import crypto from 'crypto';
+import { createRateLimiter } from './utils/rateLimit.js';
+import { validateRequestBody } from './utils/validation.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -18,9 +20,35 @@ const defaultModel = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Configure allowed origins for CORS
+const allowedOrigins = [
+  'https://uwsnapplan.vercel.app',
+  'https://snapplan.vercel.app',
+  ...(process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : []),
+  ...(process.env.NODE_ENV === 'development' ? [
+    'http://localhost:3000',
+    'http://localhost:5173',
+    'http://127.0.0.1:3000',
+    'http://127.0.0.1:5173'
+  ] : [])
+];
+
 // Middleware
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000', // Match Vite port in vite.config.ts
+  origin: (origin, callback) => {
+    // Allow requests with no origin (mobile apps, curl, Postman)
+    if (!origin && process.env.NODE_ENV === 'development') {
+      return callback(null, true);
+    }
+    
+    if (origin && allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else if (origin) {
+      callback(new Error('Not allowed by CORS'));
+    } else {
+      callback(null, true); // Allow requests without origin
+    }
+  },
   credentials: true // Allow cookies
 }));
 app.use(cookieParser());
@@ -32,7 +60,10 @@ app.get('/health', (req, res) => {
 });
 
 // Config endpoint - provides non-sensitive config to frontend
-app.get('/api/config', (req, res) => {
+app.get('/api/config', createRateLimiter({
+  windowMs: 60 * 1000,
+  maxRequests: 30
+}), (req, res) => {
   res.json({
     googleClientId: process.env.GOOGLE_CLIENT_ID || '',
     geminiModel: process.env.GEMINI_MODEL || defaultModel,
@@ -44,7 +75,10 @@ app.get('/api/config', (req, res) => {
 const codeVerifierStore = new Map();
 
 // Generate PKCE code verifier and challenge
-app.get('/api/auth/pkce', (req, res) => {
+app.get('/api/auth/pkce', createRateLimiter({
+  windowMs: 60 * 1000,
+  maxRequests: 10
+}), (req, res) => {
   // Generate code verifier (43-128 characters, URL-safe)
   const codeVerifier = crypto.randomBytes(32).toString('base64url');
   
@@ -219,7 +253,10 @@ app.post('/api/auth/callback', async (req, res) => {
 });
 
 // Get current user (validates token from cookie)
-app.get('/api/auth/user', async (req, res) => {
+app.get('/api/auth/user', createRateLimiter({
+  windowMs: 60 * 1000,
+  maxRequests: 60
+}), async (req, res) => {
   try {
     let accessToken = req.cookies?.access_token;
     const refreshToken = req.cookies?.refresh_token;
@@ -323,7 +360,10 @@ app.post('/api/auth/signout', (req, res) => {
 });
 
 // Google API proxy endpoint - proxies requests to Google APIs using token from cookie
-app.post('/api/google-proxy', async (req, res) => {
+app.post('/api/google-proxy', createRateLimiter({
+  windowMs: 60 * 1000,
+  maxRequests: 20
+}), async (req, res) => {
   try {
     const accessToken = req.cookies?.access_token;
     
@@ -399,20 +439,28 @@ async function callGeminiAPI(apiKey, endpoint, modelName, parts) {
 }
 
 // Proxy endpoint for Gemini API
-app.post('/api/gemini', async (req, res) => {
-  try {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      return res.status(500).json({ 
-        error: 'GEMINI_API_KEY is not set in server environment variables' 
-      });
-    }
+       app.post('/api/gemini', createRateLimiter({
+         windowMs: 60 * 1000,
+         maxRequests: 10
+       }), async (req, res) => {
+         try {
+           const apiKey = process.env.GEMINI_API_KEY;
+           if (!apiKey) {
+             return res.status(500).json({
+               error: 'GEMINI_API_KEY is not set in server environment variables'
+             });
+           }
 
-    const { model = defaultModel, prompt, imageData, mimeType } = req.body;
+           // Validate request body
+           const validation = validateRequestBody(req.body, true);
+           if (!validation.valid) {
+             return res.status(400).json({
+               error: 'Invalid request',
+               details: validation.errors
+             });
+           }
 
-    if (!prompt) {
-      return res.status(400).json({ error: 'Prompt is required' });
-    }
+           const { model = defaultModel, prompt, imageData, mimeType } = req.body;
 
     // Build parts for API call
     const parts = [{ text: prompt }];

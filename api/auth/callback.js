@@ -1,21 +1,29 @@
 // Vercel serverless function for /api/auth/callback
 import cookie from 'cookie';
+import { setCORSHeaders, handlePreflight } from '../utils/cors.js';
+import { rateLimitMiddleware } from '../utils/rateLimit.js';
 
 export default async function handler(req, res) {
   // Set CORS headers
-  const origin = req.headers.origin;
-  res.setHeader('Access-Control-Allow-Origin', origin || '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  setCORSHeaders(req, res, ['POST', 'OPTIONS']);
 
   // Handle preflight
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
+  if (handlePreflight(req, res, ['POST', 'OPTIONS'])) {
+    return;
   }
 
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  // Rate limiting: 5 OAuth callbacks per minute per IP (prevent abuse)
+  const rateLimitResult = rateLimitMiddleware({
+    windowMs: 60 * 1000,
+    maxRequests: 5
+  })(req, res);
+  
+  if (rateLimitResult) {
+    return rateLimitResult; // Rate limit exceeded
   }
 
   try {

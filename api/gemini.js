@@ -1,17 +1,34 @@
 // Vercel serverless function for /api/gemini
+import { setCORSHeaders, handlePreflight } from './utils/cors.js';
+import { rateLimitMiddleware } from './utils/rateLimit.js';
+import { validateRequestBody } from './utils/validation.js';
+
 export default async function handler(req, res) {
   // Set CORS headers
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  setCORSHeaders(req, res, ['POST', 'OPTIONS']);
 
   // Handle preflight
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
+  if (handlePreflight(req, res, ['POST', 'OPTIONS'])) {
+    return;
   }
 
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  // Rate limiting: 10 requests per minute per IP
+  const rateLimitResult = rateLimitMiddleware({
+    windowMs: 60 * 1000,
+    maxRequests: 10,
+    keyGenerator: (req) => {
+      return req.headers['x-forwarded-for']?.split(',')[0]?.trim() || 
+             req.headers['x-real-ip'] || 
+             'unknown';
+    }
+  })(req, res);
+  
+  if (rateLimitResult) {
+    return rateLimitResult; // Rate limit exceeded
   }
 
   try {
@@ -22,13 +39,18 @@ export default async function handler(req, res) {
       });
     }
 
+    // Validate request body
+    const validation = validateRequestBody(req.body, true);
+    if (!validation.valid) {
+      return res.status(400).json({
+        error: 'Invalid request',
+        details: validation.errors
+      });
+    }
+
     // Get default model from environment variable
     const defaultModel = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
     const { model = defaultModel, prompt, imageData, mimeType } = req.body;
-
-    if (!prompt) {
-      return res.status(400).json({ error: 'Prompt is required' });
-    }
 
     // Build parts for API call
     const parts = [{ text: prompt }];

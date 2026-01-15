@@ -1,15 +1,13 @@
 // Vercel serverless function for /api/auth/signout
+import { setCORSHeaders, handlePreflight } from '../utils/cors.js';
+
 export default function handler(req, res) {
   // Set CORS headers
-  const origin = req.headers.origin;
-  res.setHeader('Access-Control-Allow-Origin', origin || '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  setCORSHeaders(req, res, ['POST', 'OPTIONS']);
 
   // Handle preflight
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
+  if (handlePreflight(req, res, ['POST', 'OPTIONS'])) {
+    return;
   }
 
   if (req.method !== 'POST') {
