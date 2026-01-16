@@ -1,29 +1,21 @@
 // Vercel serverless function for /api/auth/pkce
 import crypto from 'crypto';
-import { setCORSHeaders, handlePreflight } from '../utils/cors.js';
-import { rateLimitMiddleware } from '../utils/rateLimit.js';
 
 export default function handler(req, res) {
   // Set CORS headers
-  setCORSHeaders(req, res, ['GET', 'OPTIONS']);
+  const origin = req.headers.origin;
+  res.setHeader('Access-Control-Allow-Origin', origin || '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
 
   // Handle preflight
-  if (handlePreflight(req, res, ['GET', 'OPTIONS'])) {
-    return;
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
   }
 
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method not allowed' });
-  }
-
-  // Rate limiting: 10 PKCE challenges per minute per IP
-  const rateLimitResult = rateLimitMiddleware({
-    windowMs: 60 * 1000,
-    maxRequests: 10
-  })(req, res);
-  
-  if (rateLimitResult) {
-    return rateLimitResult; // Rate limit exceeded
   }
 
   try {
